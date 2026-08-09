@@ -1,4 +1,4 @@
-const state = { user: null, preferences: { topics: [], sources: [], language: 'ru' }, sources: [], topic: new URLSearchParams(location.search).get('topic') || 'all', isLogin: true };
+const state = { user: null, preferences: { topics: [], sources: [], language: 'ru' }, sources: [], topic: new URLSearchParams(location.search).get('topic') || 'all', sourceId: Number(new URLSearchParams(location.search).get('source')) || null, isLogin: true };
 const labels = { models: 'Модели', dev: 'Dev', research: 'Research', tools: 'Tools', games: 'Игры', business: 'Бизнес', media: 'Медиа' };
 const topicChoices = [['models', 'Модели и LLM'], ['dev', 'Разработка'], ['research', 'Исследования'], ['tools', 'Инструменты'], ['games', 'Игры'], ['business', 'Бизнес'], ['media', 'Медиа']];
 const $ = (selector) => document.querySelector(selector);
@@ -84,16 +84,21 @@ function enhanceCodeBlocks() {
   });
 }
 async function loadFeed() {
-  const query = state.topic === 'all' ? '' : `?topic=${state.topic}`;
-  const [{ articles, personalized }, { posts }] = await Promise.all([request(`/api/feed${query}`), request('/api/posts')]);
-  const ownPosts = state.topic === 'all' ? posts.map((post) => ({ ...post, summary: post.blocks.find((block) => block.type === 'paragraph' || block.type === 'quote')?.text || 'Авторская публикация сообщества.' })) : [];
+  const query = new URLSearchParams();
+  if (state.sourceId) query.set('source', state.sourceId);
+  else if (state.topic !== 'all') query.set('topic', state.topic);
+  const selectedSource = state.sources.find((source) => source.id === state.sourceId);
+  const [{ articles, personalized }, { posts }] = await Promise.all([request(`/api/feed${query.size ? `?${query}` : ''}`), request('/api/posts')]);
+  const ownPosts = state.topic === 'all' && !state.sourceId ? posts.map((post) => ({ ...post, summary: post.blocks.find((block) => block.type === 'paragraph' || block.type === 'quote')?.text || 'Авторская публикация сообщества.' })) : [];
   const allItems = [...ownPosts, ...articles].sort((left, right) => new Date(right.publishedAt) - new Date(left.publishedAt));
-  $('#feedHeading').textContent = personalized ? 'Ваша персональная лента' : 'Свежие публикации';
+  $('#feedHeading').textContent = selectedSource ? `${selectedSource.name} — последние материалы` : (personalized ? 'Ваша персональная лента' : 'Свежие публикации');
+  $('#sourceFeedReset').hidden = !selectedSource;
   $('#articleList').innerHTML = allItems.length ? allItems.map(articleMarkup).join('') : '<div class="empty-state"><strong>Пока нет публикаций по этим условиям.</strong><span>Попробуйте включить больше тем или обновить ленту.</span></div>';
   $('#refreshLabel').textContent = `Лента обновлена · ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
 }
 function renderSources() {
-  $('#sourceList').innerHTML = state.sources.map((source) => `<a class="source" href="${escapeHtml(source.url)}" target="_blank" rel="noopener"><span class="source-logo" style="background:${escapeHtml(source.accent)}">${escapeHtml(source.name.slice(0, 2).toUpperCase())}</span><span><strong>${escapeHtml(source.name)}</strong><small>Открыть источник</small></span><b>↗</b></a>`).join('');
+  $('#sourceList').innerHTML = state.sources.map((source) => `<a class="source ${state.sourceId === source.id ? 'active' : ''}" href="/?source=${source.id}" data-source-filter="${source.id}"><span class="source-logo" style="background:${escapeHtml(source.accent)}">${escapeHtml(source.name.slice(0, 2).toUpperCase())}</span><span><strong>${escapeHtml(source.name)}</strong><small>Последние материалы</small></span><b>→</b></a>`).join('');
+  document.querySelectorAll('[data-source-filter]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); selectSource(Number(event.currentTarget.dataset.sourceFilter)); }));
 }
 function renderProfile() {
   const accountButton = $('#accountButton');
@@ -130,7 +135,8 @@ function openSettings() {
 async function logout() { await request('/api/auth/logout', { method: 'POST' }); state.user = null; state.preferences = { topics: [], sources: [], language: 'ru' }; renderProfile(); if (location.pathname !== '/') { location.href = '/'; return; } loadFeed(); }
 
 function syncTopicControls() { document.querySelectorAll('[data-topic]').forEach((item) => item.classList.toggle('active', item.dataset.topic === state.topic)); }
-function selectTopic(topic) { trackEvent('feed_topic_select', { topic }); state.topic = topic; syncTopicControls(); if (!$('#articleList')) { location.href = `/?topic=${encodeURIComponent(topic)}`; return; } history.replaceState(null, '', topic === 'all' ? '/' : `/?topic=${encodeURIComponent(topic)}`); loadFeed(); }
+function selectTopic(topic) { trackEvent('feed_topic_select', { topic }); state.topic = topic; state.sourceId = null; syncTopicControls(); if (!$('#articleList')) { location.href = `/?topic=${encodeURIComponent(topic)}`; return; } history.replaceState(null, '', topic === 'all' ? '/' : `/?topic=${encodeURIComponent(topic)}`); renderSources(); loadFeed(); }
+function selectSource(sourceId) { const selectedSourceId = Number(sourceId) || null; trackEvent('feed_source_select', { source_id: selectedSourceId }); state.sourceId = selectedSourceId; state.topic = 'all'; syncTopicControls(); history.replaceState(null, '', selectedSourceId ? `/?source=${selectedSourceId}` : '/'); renderSources(); loadFeed(); document.querySelector('#feed')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 document.querySelectorAll('[data-topic]').forEach((button) => button.addEventListener('click', () => selectTopic(button.dataset.topic)));
 $('#themeToggle').addEventListener('click', () => document.body.classList.toggle('dark'));
 $('#sidebarTheme').addEventListener('click', () => document.body.classList.toggle('dark'));
@@ -142,6 +148,7 @@ $('#writeButton').addEventListener('click', () => { location.href = '/write'; })
 $('#profileButton').addEventListener('click', () => { if (state.user) location.href = `/profile/${state.user.id}`; });
 $('#accountButton').addEventListener('click', () => state.user ? openSettings() : openAuth(true));
 $('#setupButton').addEventListener('click', openSettings); $('#sourcesSetup').addEventListener('click', openSettings);
+$('#sourceFeedReset').addEventListener('click', () => selectSource(null));
 $('#profileLogin')?.addEventListener('click', () => openAuth(false));
 $('#authSwitch').addEventListener('click', () => openAuth(!state.isLogin));
 document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => $(`#${button.dataset.close}`).close()));

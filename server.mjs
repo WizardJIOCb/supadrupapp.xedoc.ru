@@ -503,16 +503,19 @@ function profileById(userId) {
   ) ORDER BY datetime(createdAt) DESC LIMIT 100`).all(userId, userId);
   return { profile, posts, comments };
 }
-async function feed(user, topic) {
+async function feed(user, topic, sourceId) {
   const selected = user ? preferences(user.id) : { topics: [], sources: [], language: 'ru' };
   const topics = topic && TOPICS.includes(topic) ? [topic] : selected.topics;
+  const requestedSourceId = Number(sourceId);
+  const hasSourceFilter = Number.isInteger(requestedSourceId) && requestedSourceId > 0;
   const disabledSources = selected.sources.filter((row) => !row.enabled).map((row) => row.sourceId);
   let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, articles.source_popularity_label AS sourcePopularityLabel,
     (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id) AS commentCount,
     sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE 1=1`;
   const params = [];
-  if (topics.length) { query += ` AND articles.category IN (${topics.map(() => '?').join(',')})`; params.push(...topics); }
-  if (disabledSources.length) { query += ` AND articles.source_id NOT IN (${disabledSources.map(() => '?').join(',')})`; params.push(...disabledSources); }
+  if (hasSourceFilter) { query += ' AND articles.source_id = ?'; params.push(requestedSourceId); }
+  else if (topics.length) { query += ` AND articles.category IN (${topics.map(() => '?').join(',')})`; params.push(...topics); }
+  if (!hasSourceFilter && disabledSources.length) { query += ` AND articles.source_id NOT IN (${disabledSources.map(() => '?').join(',')})`; params.push(...disabledSources); }
   query += ' ORDER BY datetime(articles.published_at) DESC LIMIT 30';
   const articles = db.prepare(query).all(...params);
   return { articles: await translateArticles(articles, selected.language), language: selected.language };
@@ -591,7 +594,7 @@ async function api(request, response, url) {
     return json(response, 200, { post: postById(post.id, user) });
   }
   if (request.method === 'GET' && url.pathname === '/api/feed') {
-    const result = await feed(user, url.searchParams.get('topic'));
+    const result = await feed(user, url.searchParams.get('topic'), url.searchParams.get('source'));
     return json(response, 200, { ...result, personalized: Boolean(user) });
   }
   const commentsMatch = url.pathname.match(/^\/api\/articles\/(\d+)\/comments$/);
