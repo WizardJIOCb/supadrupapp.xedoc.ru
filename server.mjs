@@ -676,17 +676,20 @@ function articleOrder(sort) {
   if (sort === 'comments') return 'commentCount DESC, viewCount DESC, datetime(articles.published_at) DESC';
   return 'datetime(articles.published_at) DESC';
 }
+function sourceIdsFrom(value) {
+  return [...new Set(String(value || '').split(',').map(Number).filter((id) => Number.isInteger(id) && id > 0))].slice(0, 20);
+}
 async function feed(user, topic, sourceId, sort) {
   const selected = user ? preferences(user.id) : { topics: [], sources: [], language: 'ru' };
   const topics = topic && TOPICS.includes(topic) ? [topic] : selected.topics;
-  const requestedSourceId = Number(sourceId);
-  const hasSourceFilter = Number.isInteger(requestedSourceId) && requestedSourceId > 0;
+  const requestedSourceIds = sourceIdsFrom(sourceId);
+  const hasSourceFilter = requestedSourceIds.length > 0;
   const disabledSources = selected.sources.filter((row) => !row.enabled).map((row) => row.sourceId);
   let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, articles.source_popularity_label AS sourcePopularityLabel,
     (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id AND comments.deleted_at IS NULL) AS commentCount,
     sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE articles.is_hidden = 0`;
   const params = [];
-  if (hasSourceFilter) { query += ' AND articles.source_id = ?'; params.push(requestedSourceId); }
+  if (hasSourceFilter) { query += ` AND articles.source_id IN (${requestedSourceIds.map(() => '?').join(',')})`; params.push(...requestedSourceIds); }
   else if (topics.length) { query += ` AND articles.category IN (${topics.map(() => '?').join(',')})`; params.push(...topics); }
   if (!hasSourceFilter && disabledSources.length) { query += ` AND articles.source_id NOT IN (${disabledSources.map(() => '?').join(',')})`; params.push(...disabledSources); }
   query += ` ORDER BY ${articleOrder(sort)} LIMIT 30`;
@@ -697,12 +700,12 @@ async function highlights(user, period, sourceId, sort) {
   const days = { day: 1, week: 7, month: 31 }[period] || 1;
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   const language = user ? preferences(user.id).language : 'ru';
-  const selectedSourceId = Number(sourceId) || null;
+  const selectedSourceIds = sourceIdsFrom(sourceId);
   let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, articles.source_popularity_label AS sourcePopularityLabel,
     (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id AND comments.deleted_at IS NULL) AS commentCount,
     sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE sources.enabled = 1 AND articles.is_hidden = 0`;
   const params = [];
-  if (selectedSourceId) { query += ' AND articles.source_id = ?'; params.push(selectedSourceId); }
+  if (selectedSourceIds.length) { query += ` AND articles.source_id IN (${selectedSourceIds.map(() => '?').join(',')})`; params.push(...selectedSourceIds); }
   query += ` ORDER BY ${articleOrder(sort)} LIMIT 400`;
   const rows = db.prepare(query).all(...params)
     .filter((article) => new Date(article.publishedAt).getTime() >= cutoff)
@@ -723,14 +726,15 @@ async function highlights(user, period, sourceId, sort) {
     return right.hotScore - left.hotScore || new Date(right.publishedAt) - new Date(left.publishedAt);
   });
   const perSource = new Map();
+  const sourceLimit = selectedSourceIds.length > 1 ? Math.ceil(18 / selectedSourceIds.length) : selectedSourceIds.length ? Infinity : 3;
   const articles = [];
   for (const article of rows) {
-    if (!selectedSourceId && (perSource.get(article.sourceId) || 0) >= 3) continue;
+    if ((perSource.get(article.sourceId) || 0) >= sourceLimit) continue;
     perSource.set(article.sourceId, (perSource.get(article.sourceId) || 0) + 1);
     articles.push(article);
     if (articles.length === 18) break;
   }
-  return { articles: await translateArticles(articles, language), language, sourceId: selectedSourceId, period: days === 1 ? 'day' : days === 7 ? 'week' : 'month' };
+  return { articles: await translateArticles(articles, language), language, sourceIds: selectedSourceIds, period: days === 1 ? 'day' : days === 7 ? 'week' : 'month' };
 }
 async function searchContent(user, query, sourceId) {
   const text = String(query || '').trim().replace(/\s+/g, ' ').slice(0, 100);
