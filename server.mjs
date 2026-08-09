@@ -25,7 +25,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS user_sources (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (user_id, source_id));
   CREATE TABLE IF NOT EXISTS user_settings (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, language TEXT NOT NULL DEFAULT 'ru' CHECK(language IN ('ru', 'en')));
   CREATE TABLE IF NOT EXISTS translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, summary TEXT, PRIMARY KEY (article_id, language));
-  CREATE TABLE IF NOT EXISTS article_pages (article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE, original_title TEXT NOT NULL, original_content TEXT NOT NULL, original_markup TEXT NOT NULL DEFAULT '', fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE TABLE IF NOT EXISTS article_pages (article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE, original_title TEXT NOT NULL, original_content TEXT NOT NULL, original_markup TEXT NOT NULL DEFAULT '', original_markup_version INTEGER NOT NULL DEFAULT 1, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS article_page_translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY (article_id, language));
   CREATE TABLE IF NOT EXISTS user_profiles (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, display_name TEXT NOT NULL, bio TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '');
   CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id INTEGER, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -42,6 +42,7 @@ if (!db.prepare("SELECT name FROM pragma_table_info('user_profiles') WHERE name 
 if (!db.prepare("SELECT name FROM pragma_table_info('articles') WHERE name = 'view_count'").get()) db.exec('ALTER TABLE articles ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0');
 if (!db.prepare("SELECT name FROM pragma_table_info('user_posts') WHERE name = 'view_count'").get()) db.exec('ALTER TABLE user_posts ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0');
 if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup'").get()) db.exec("ALTER TABLE article_pages ADD COLUMN original_markup TEXT NOT NULL DEFAULT ''");
+if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup_version'").get()) db.exec('ALTER TABLE article_pages ADD COLUMN original_markup_version INTEGER NOT NULL DEFAULT 1');
 
 const SOURCE_SEED = [
   ['OpenAI', 'https://openai.com/news/', 'https://openai.com/news/rss.xml', '#cefa62'],
@@ -54,6 +55,7 @@ const SOURCE_SEED = [
 const insertSource = db.prepare('INSERT OR IGNORE INTO sources (name, url, feed_url, accent) VALUES (?, ?, ?, ?)');
 SOURCE_SEED.forEach((source) => insertSource.run(...source));
 const TOPICS = ['models', 'dev', 'research', 'tools', 'games', 'business', 'media'];
+const RICH_MARKUP_VERSION = 2;
 let lastRefresh = 0;
 let refreshPromise = null;
 
@@ -274,6 +276,7 @@ function dtfRichPage(html, article) {
   for (const block of entry.blocks) {
     if (block.hidden) continue;
     if (block.type === 'text' && block.data?.text) markup.push(safeRichMarkup(block.data.text, article.url));
+    if (block.type === 'header' && block.data?.text) markup.push(`<h2>${escapeHtml(clean(block.data.text))}</h2>`);
     if (block.type === 'list' && Array.isArray(block.data?.items)) {
       const listTag = block.data.type === 'OL' ? 'ol' : 'ul';
       const items = block.data.items.map((item) => `<li>${safeRichMarkup(item, article.url)}</li>`).join('');
@@ -288,6 +291,15 @@ function dtfRichPage(html, article) {
         markup.push(`<figure><img src="${src}" alt="" loading="lazy" referrerpolicy="no-referrer" />${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ''}</figure>`);
       }
     }
+    if (block.type === 'video') {
+      const video = block.data?.video?.data;
+      const service = video?.external_service;
+      const id = String(service?.id || '');
+      if (service?.name === 'youtube' && /^[A-Za-z0-9_-]{6,}$/.test(id)) {
+        const title = clean(block.data?.title || 'Видео из статьи');
+        markup.push(`<figure class="reader-video"><iframe src="https://www.youtube-nocookie.com/embed/${id}?rel=0" title="${escapeHtml(title)}" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe></figure>`);
+      }
+    }
     if (block.type === 'quote' && block.data?.text) markup.push(`<blockquote>${safeRichMarkup(block.data.text, article.url)}</blockquote>`);
   }
   const content = clean(markup.join('\n'));
@@ -298,8 +310,8 @@ function pageTitleFromHtml(html, fallback) {
   return clean(ogTitle || tag(html, 'title') || fallback).slice(0, 500);
 }
 async function loadOriginalPage(article) {
-  const cached = db.prepare('SELECT original_title AS title, original_content AS content, original_markup AS markup FROM article_pages WHERE article_id = ?').get(article.id);
-  if (cached?.content.length >= 200 && (article.sourceName !== 'DTF' || cached.markup)) return cached;
+  const cached = db.prepare('SELECT original_title AS title, original_content AS content, original_markup AS markup, original_markup_version AS markupVersion FROM article_pages WHERE article_id = ?').get(article.id);
+  if (cached?.content.length >= 200 && (article.sourceName !== 'DTF' || (cached.markup && cached.markupVersion === RICH_MARKUP_VERSION))) return cached;
   let page;
   try {
     const destination = new URL(article.url);
@@ -313,7 +325,7 @@ async function loadOriginalPage(article) {
     page = { title: article.title, content: article.summary || 'Источник временно не разрешил загрузку полного текста. Откройте оригинал по ссылке выше.', markup: '' };
   }
   if (page.content.length < 80) page.content = article.summary || 'Источник временно не разрешил загрузку полного текста. Откройте оригинал по ссылке выше.';
-  db.prepare('INSERT OR REPLACE INTO article_pages (article_id, original_title, original_content, original_markup) VALUES (?, ?, ?, ?)').run(article.id, page.title, page.content, page.markup || '');
+  db.prepare('INSERT OR REPLACE INTO article_pages (article_id, original_title, original_content, original_markup, original_markup_version) VALUES (?, ?, ?, ?, ?)').run(article.id, page.title, page.content, page.markup || '', RICH_MARKUP_VERSION);
   return page;
 }
 async function translateText(text, language) {
