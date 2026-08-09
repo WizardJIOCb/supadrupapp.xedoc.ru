@@ -25,6 +25,9 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, summary TEXT, PRIMARY KEY (article_id, language));
   CREATE TABLE IF NOT EXISTS article_pages (article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE, original_title TEXT NOT NULL, original_content TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS article_page_translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY (article_id, language));
+  CREATE TABLE IF NOT EXISTS user_profiles (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, display_name TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE INDEX IF NOT EXISTS comments_article_idx ON comments(article_id, created_at DESC);
 `);
 
 const SOURCE_SEED = [
@@ -99,9 +102,9 @@ function userFromRequest(request) {
   const token = match?.[1];
   if (!token) return null;
   const hash = createHash('sha256').update(token).digest('hex');
-  const session = db.prepare('SELECT users.id, users.email, sessions.expires_at AS expiresAt FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ?').get(hash);
+  const session = db.prepare('SELECT users.id, users.email, user_profiles.display_name AS displayName, sessions.expires_at AS expiresAt FROM sessions JOIN users ON users.id = sessions.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE sessions.token_hash = ?').get(hash);
   if (!session || new Date(`${session.expiresAt.replace(' ', 'T')}Z`) <= new Date()) return null;
-  return { id: session.id, email: session.email };
+  return { id: session.id, email: session.email, displayName: session.displayName || session.email.split('@')[0] };
 }
 function json(response, status, body, headers = {}) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
@@ -249,6 +252,12 @@ async function articlePage(user, articleId) {
     return { ...article, ...original, language: 'en', originalUrl: article.url };
   }
 }
+function commentsFor(articleId) {
+  return db.prepare(`SELECT comments.id, comments.body, comments.created_at AS createdAt,
+    COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
+    FROM comments JOIN users ON users.id = comments.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id
+    WHERE comments.article_id = ? ORDER BY datetime(comments.created_at) DESC`).all(articleId);
+}
 async function feed(user, topic) {
   const selected = user ? preferences(user.id) : { topics: [], sources: [], language: 'ru' };
   const topics = topic && TOPICS.includes(topic) ? [topic] : selected.topics;
@@ -270,6 +279,18 @@ async function api(request, response, url) {
     const result = await feed(user, url.searchParams.get('topic'));
     return json(response, 200, { ...result, personalized: Boolean(user) });
   }
+  const commentsMatch = url.pathname.match(/^\/api\/articles\/(\d+)\/comments$/);
+  if (request.method === 'GET' && commentsMatch) return json(response, 200, { comments: commentsFor(Number(commentsMatch[1])) });
+  if (request.method === 'POST' && commentsMatch) {
+    if (!user) return json(response, 401, { error: 'Войдите, чтобы оставить комментарий.' });
+    const { body: commentBody = '' } = await body(request);
+    const text = commentBody.trim().replace(/\s+/g, ' ');
+    if (text.length < 2 || text.length > 1500) return badRequest(response, 'Комментарий должен содержать от 2 до 1500 символов.');
+    const exists = db.prepare('SELECT id FROM articles WHERE id = ?').get(Number(commentsMatch[1]));
+    if (!exists) return json(response, 404, { error: 'Статья не найдена.' });
+    db.prepare('INSERT INTO comments (article_id, user_id, body) VALUES (?, ?, ?)').run(Number(commentsMatch[1]), user.id, text);
+    return json(response, 201, { comments: commentsFor(Number(commentsMatch[1])) });
+  }
   const articleMatch = url.pathname.match(/^\/api\/articles\/(\d+)$/);
   if (request.method === 'GET' && articleMatch) {
     const article = await articlePage(user, Number(articleMatch[1]));
@@ -280,20 +301,23 @@ async function api(request, response, url) {
     return json(response, 200, result);
   }
   if (request.method === 'POST' && url.pathname === '/api/auth/register') {
-    const { email = '', password = '' } = await body(request);
+    const { email = '', password = '', displayName = '' } = await body(request);
     const normalized = email.trim().toLowerCase();
+    const name = displayName.trim().replace(/\s+/g, ' ').slice(0, 60) || normalized.split('@')[0];
     if (!/^\S+@\S+\.\S+$/.test(normalized)) return badRequest(response, 'Введите корректный email.');
     if (password.length < 8) return badRequest(response, 'Пароль должен содержать не менее 8 символов.');
     try {
       const result = db.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)').run(normalized, await hashPassword(password));
-      return createUserSession(response, { id: Number(result.lastInsertRowid), email: normalized });
+      const user = { id: Number(result.lastInsertRowid), email: normalized, displayName: name };
+      db.prepare('INSERT INTO user_profiles (user_id, display_name) VALUES (?, ?)').run(user.id, name);
+      return createUserSession(response, user);
     } catch { return badRequest(response, 'Пользователь с таким email уже существует.'); }
   }
   if (request.method === 'POST' && url.pathname === '/api/auth/login') {
     const { email = '', password = '' } = await body(request);
-    const userRecord = db.prepare('SELECT id, email, password_hash FROM users WHERE email = ?').get(email.trim().toLowerCase());
+    const userRecord = db.prepare('SELECT users.id, users.email, users.password_hash, user_profiles.display_name AS displayName FROM users LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE users.email = ?').get(email.trim().toLowerCase());
     if (!userRecord || !(await passwordMatches(password, userRecord.password_hash))) return json(response, 401, { error: 'Неверный email или пароль.' });
-    return createUserSession(response, { id: userRecord.id, email: userRecord.email });
+    return createUserSession(response, { id: userRecord.id, email: userRecord.email, displayName: userRecord.displayName || userRecord.email.split('@')[0] });
   }
   if (request.method === 'POST' && url.pathname === '/api/auth/logout') {
     const token = (request.headers.cookie || '').match(/(?:^|;\s*)signal_session=([^;]+)/)?.[1];
@@ -322,7 +346,7 @@ async function api(request, response, url) {
 }
 async function staticFile(request, response, path) {
   const requested = path === '/' ? 'index.html' : path.slice(1);
-  if (!['index.html', 'styles.css', 'reader.css', 'layout.css', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
+  if (!['index.html', 'styles.css', 'reader.css', 'layout.css', 'community.css', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
   try {
     const file = await readFile(join(staticDir, requested));
     const type = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'application/javascript; charset=utf-8' }[extname(requested)];
