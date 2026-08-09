@@ -2,3 +2,4 @@
 .write-button{height:37px;display:inline-flex;align-items:center;justify-content:center;gap:4px;line-height:1}.write-button span{display:inline-flex;align-items:center;line-height:1;margin-left:0}
 .post-content h2{margin:38px 0 13px;font-size:25px;line-height:1.22}.post-content blockquote{margin:28px 0;padding:3px 0 3px 18px;font-size:21px;line-height:1.42}.post-content hr{margin:35px 0}.post-content figure{margin:31px 0}.post-poll{margin:29px 0;padding:17px}.post-poll h3{font-size:16px}.poll-option{padding:10px 11px;font-size:12px}@media(max-width:760px){.post-content h2{font-size:22px}.post-content blockquote{font-size:19px}}
 .post-content a{color:#175ec5;text-decoration:none}.post-content a:hover{text-decoration:underline;text-underline-offset:3px}body.dark .post-content a{color:#aebdff}
+body.dark .publish-bar button,body.dark .writer-gate button{background:#f1f0ea;color:#171716}
