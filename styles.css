@@ -3,3 +3,4 @@
 body.dark .topic.active,body.dark .subscribe-button,body.dark dialog form>button,body.dark .account-button:hover,body.dark .icon-button:hover,body.dark .comment-form button,body.dark .profile-edit button:not(.profile-logout){background:#f1f0ea;color:#171716}body.dark .topic.active{border-color:#f1f0ea}
 .profile-actions{display:flex;align-items:center;gap:19px;margin-top:7px}.profile-actions .logout-button{margin-top:0}
 .profile-card #profileContent .profile-actions{flex:0 0 100%;width:100%;margin-top:0}
+.tag.games{background:#c9ef9e}.tag.business{background:#ffd29e}.tag.media{background:#bad8ff}.tag.games,.tag.business,.tag.media{color:#25231f}

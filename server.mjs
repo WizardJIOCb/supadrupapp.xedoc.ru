@@ -50,7 +50,7 @@ const SOURCE_SEED = [
 ];
 const insertSource = db.prepare('INSERT OR IGNORE INTO sources (name, url, feed_url, accent) VALUES (?, ?, ?, ?)');
 SOURCE_SEED.forEach((source) => insertSource.run(...source));
-const TOPICS = ['models', 'dev', 'research', 'tools'];
+const TOPICS = ['models', 'dev', 'research', 'tools', 'games', 'business', 'media'];
 let lastRefresh = 0;
 let refreshPromise = null;
 
@@ -70,11 +70,25 @@ function linkFrom(block) {
 }
 function categoryFor(sourceName, title, summary) {
   const text = `${title} ${summary}`.toLowerCase();
-  if (/research|paper|benchmark|eval|dataset|science|reasoning|safety/.test(text)) return 'research';
-  if (/model|gpt|llm|transformer|inference|embedding|multimodal/.test(text)) return 'models';
-  if (/api|developer|code|github|cli|sdk|worker|build|deploy|javascript|python/.test(text)) return 'dev';
+  if (/research|paper|benchmark|eval|dataset|science|reasoning|safety|исследован|научн|бенчмарк|датасет|безопасност/.test(text)) return 'research';
+  if (/model|gpt|llm|transformer|inference|embedding|multimodal|искусственн.*интеллект|нейросет|(?:^|[^а-яё])ии(?:$|[^а-яё])|модел[ьяи]/.test(text)) return 'models';
+  if (/api|developer|code|github|cli|sdk|worker|build|deploy|javascript|python|разработк|программир|код[ауе]?|инженер/.test(text)) return 'dev';
+  if (/game|gaming|steam|playstation|xbox|nintendo|blizzard|rpg|adventure|игр[аыое]|гейм|адвенчур|консол|трейлер/.test(text)) return 'games';
+  if (/business|market|company|startup|finance|econom|revenue|sales|stock|бизнес|компан|рынок|маркетплейс|wildberries|яндекс|акци[яи]|инвест|деньг|финанс|эконом|продаж|выруч|сделк|реклам/.test(text)) return 'business';
+  if (/movie|film|series|music|streaming|netflix|hbo|disney|anime|cinema|кино|фильм|сериал|музык|стриминг|аниме|комикс|режисс/.test(text)) return 'media';
+  if (sourceName === 'DTF') return 'games';
+  if (sourceName === 'vc.ru') return 'business';
   return sourceName === 'GitHub Blog' || sourceName === 'Cloudflare' ? 'dev' : 'tools';
 }
+function reclassifyArticles() {
+  const articles = db.prepare('SELECT articles.id, articles.title, articles.summary, articles.category, sources.name AS sourceName FROM articles JOIN sources ON sources.id = articles.source_id').all();
+  const updateCategory = db.prepare('UPDATE articles SET category = ? WHERE id = ?');
+  for (const article of articles) {
+    const category = categoryFor(article.sourceName, article.title, article.summary || '');
+    if (category !== article.category) updateCategory.run(category, article.id);
+  }
+}
+reclassifyArticles();
 function parseFeed(xml, source) {
   const blocks = xml.match(/<item(?:\s[^>]*)?>[\s\S]*?<\/item>/gi) || xml.match(/<entry(?:\s[^>]*)?>[\s\S]*?<\/entry>/gi) || [];
   return blocks.slice(0, 50).map((block) => {
