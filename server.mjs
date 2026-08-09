@@ -551,6 +551,35 @@ async function feed(user, topic, sourceId) {
   const articles = db.prepare(query).all(...params);
   return { articles: await translateArticles(articles, selected.language), language: selected.language };
 }
+async function highlights(user, period) {
+  const days = { day: 1, week: 7, month: 31 }[period] || 1;
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const language = user ? preferences(user.id).language : 'ru';
+  const rows = db.prepare(`SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, articles.source_popularity_label AS sourcePopularityLabel,
+    (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id) AS commentCount,
+    sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE sources.enabled = 1 ORDER BY datetime(articles.published_at) DESC LIMIT 400`).all()
+    .filter((article) => new Date(article.publishedAt).getTime() >= cutoff)
+    .map((article) => {
+      const popularity = String(article.sourcePopularityLabel || '');
+      const rank = Number(popularity.match(/#(\d+)/)?.[1]) || 0;
+      const points = Number(popularity.match(/·\s*(\d+)\s*pts/)?.[1]) || 0;
+      const sourceComments = Number(popularity.match(/·\s*(\d+)\s*комм/)?.[1]) || 0;
+      const ageHours = Math.max(0, (Date.now() - new Date(article.publishedAt).getTime()) / 36e5);
+      const freshness = Math.max(0, 30 * (1 - ageHours / (days * 24)));
+      const sourceScore = rank ? Math.max(0, 100 - rank) * 1.25 + Math.min(points, 400) * .15 + Math.min(sourceComments, 400) * .07 : 0;
+      const localScore = Math.min(article.viewCount, 100) * .5 + Math.min(article.commentCount, 100) * 3;
+      return { ...article, hotScore: Math.round(sourceScore + localScore + freshness) };
+    }).sort((left, right) => right.hotScore - left.hotScore || new Date(right.publishedAt) - new Date(left.publishedAt));
+  const perSource = new Map();
+  const articles = [];
+  for (const article of rows) {
+    if ((perSource.get(article.sourceId) || 0) >= 3) continue;
+    perSource.set(article.sourceId, (perSource.get(article.sourceId) || 0) + 1);
+    articles.push(article);
+    if (articles.length === 18) break;
+  }
+  return { articles: await translateArticles(articles, language), language, period: days === 1 ? 'day' : days === 7 ? 'week' : 'month' };
+}
 async function api(request, response, url) {
   const user = userFromRequest(request);
   if (request.method === 'GET' && url.pathname === '/api/health') return json(response, 200, { ok: true });
@@ -628,6 +657,7 @@ async function api(request, response, url) {
     const result = await feed(user, url.searchParams.get('topic'), url.searchParams.get('source'));
     return json(response, 200, { ...result, personalized: Boolean(user) });
   }
+  if (request.method === 'GET' && url.pathname === '/api/highlights') return json(response, 200, await highlights(user, url.searchParams.get('period')));
   const commentsMatch = url.pathname.match(/^\/api\/articles\/(\d+)\/comments$/);
   if (request.method === 'GET' && commentsMatch) return json(response, 200, { comments: commentsFor(Number(commentsMatch[1])) });
   if (request.method === 'POST' && commentsMatch) {

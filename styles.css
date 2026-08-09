@@ -8,3 +8,4 @@ body.dark .topic.active,body.dark .subscribe-button,body.dark dialog form>button
 .source-popularity{display:inline-flex;align-items:center;color:#7a5ee0;font:9px var(--mono);letter-spacing:0;text-transform:none;white-space:nowrap}
 .article-source-popularity{margin-top:9px;min-height:14px}.article-source-popularity .source-popularity{font-size:10px}
 .source.active{border-radius:6px;background:#8463ef12}.source.active strong{color:var(--violet)}.feed-reset{flex:none;border:0;background:transparent;color:var(--violet);padding:0;font-size:11px;font-weight:800;text-decoration:underline;text-underline-offset:3px}
+.best-periods{display:flex;align-items:center;gap:4px}.best-periods button{border:1px solid var(--line);border-radius:100px;background:transparent;color:var(--muted);padding:5px 8px;font-size:10px;font-weight:800}.best-periods button.active,.best-periods button:hover{border-color:var(--violet);background:#8463ef12;color:var(--violet)}
