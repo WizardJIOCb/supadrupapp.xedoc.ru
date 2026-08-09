@@ -57,7 +57,7 @@ const SOURCE_SEED = [
 const insertSource = db.prepare('INSERT OR IGNORE INTO sources (name, url, feed_url, accent) VALUES (?, ?, ?, ?)');
 SOURCE_SEED.forEach((source) => insertSource.run(...source));
 const TOPICS = ['models', 'dev', 'research', 'tools', 'games', 'business', 'media'];
-const RICH_MARKUP_VERSION = 6;
+const RICH_MARKUP_VERSION = 7;
 let lastRefresh = 0;
 let refreshPromise = null;
 
@@ -236,7 +236,7 @@ function safeExternalUrl(value, base) {
   } catch { return ''; }
 }
 function safeRichMarkup(html, base) {
-  const allowed = new Set(['p', 'h2', 'h3', 'ul', 'ol', 'li', 'blockquote', 'strong', 'b', 'em', 'i', 'br', 'a', 'pre', 'code']);
+  const allowed = new Set(['p', 'h2', 'h3', 'h4', 'ul', 'ol', 'li', 'blockquote', 'strong', 'b', 'em', 'i', 'br', 'a', 'pre', 'code', 'figure', 'figcaption', 'img']);
   return String(html || '').replace(/<[^>]*>/g, (rawTag) => {
     const match = rawTag.match(/^<\s*(\/?)\s*([a-z0-9]+)/i);
     if (!match) return '';
@@ -245,6 +245,12 @@ function safeRichMarkup(html, base) {
     if (!allowed.has(name)) return '';
     if (name === 'pre') return closing ? '</pre>' : '<pre class="reader-code-block">';
     if (name === 'code') return closing ? '</code>' : '<code>';
+    if (name === 'img') {
+      if (closing) return '';
+      const src = rawTag.match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+      const url = safeExternalUrl(src?.[1] || src?.[2] || src?.[3], base);
+      return url ? `<img src="${escapeHtml(url)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '';
+    }
     if (name === 'br') return closing ? '' : '<br />';
     if (name !== 'a') return `<${closing ? '/' : ''}${name}>`;
     if (closing) return '</a>';
@@ -279,7 +285,7 @@ function genericRichPage(html, article) {
   const withoutHeader = fragment.replace(/<header\b[^>]*>[\s\S]*?<\/header>/gi, '');
   const markup = safeRichMarkup(withoutHeader, article.url).replace(/(?:<br>\s*){3,}/g, '<br><br>').trim();
   const content = extractPageContent(withoutHeader, true);
-  return markup.includes('<pre') && content.length >= 80 ? { title: pageTitleFromHtml(html, article.title), content, markup } : null;
+  return /<(h2|h3|h4|ul|ol|blockquote|pre|figure)\b/i.test(markup) && content.length >= 80 ? { title: pageTitleFromHtml(html, article.title), content, markup } : null;
 }
 function contentMarkupWithCode(content, originalMarkup) {
   const codeBlocks = [...String(originalMarkup || '').matchAll(/<pre\b[^>]*>[\s\S]*?<\/pre>/gi)].map((match) => match[0]);
@@ -410,6 +416,7 @@ async function articlePage(user, articleId) {
   const original = await loadOriginalPage(article);
   if (language === 'en') return { ...article, ...original, language, originalUrl: article.url, markup: original.markup || '' };
   if (article.sourceName === 'DTF' && original.markup) return { ...article, ...original, language: 'ru', originalUrl: article.url, markup: original.markup };
+  if (article.sourceName === 'Habr' && original.markup) return { ...article, ...original, language: 'ru', originalUrl: article.url, markup: original.markup };
   const cached = db.prepare('SELECT title, content FROM article_page_translations WHERE article_id = ? AND language = ?').get(article.id, language);
   if (cached?.content.length >= 200 && !original.markup.includes('<pre')) return { ...article, title: cached.title, content: cached.content, language, originalUrl: article.url };
   try {

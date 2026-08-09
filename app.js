@@ -136,7 +136,7 @@ async function logout() { await request('/api/auth/logout', { method: 'POST' });
 
 function syncTopicControls() { document.querySelectorAll('[data-topic]').forEach((item) => item.classList.toggle('active', item.dataset.topic === state.topic)); }
 function selectTopic(topic) { trackEvent('feed_topic_select', { topic }); state.topic = topic; state.sourceId = null; syncTopicControls(); if (!$('#articleList')) { location.href = `/?topic=${encodeURIComponent(topic)}`; return; } history.replaceState(null, '', topic === 'all' ? '/' : `/?topic=${encodeURIComponent(topic)}`); renderSources(); loadFeed(); }
-function selectSource(sourceId) { const selectedSourceId = Number(sourceId) || null; trackEvent('feed_source_select', { source_id: selectedSourceId }); state.sourceId = selectedSourceId; state.topic = 'all'; syncTopicControls(); history.replaceState(null, '', selectedSourceId ? `/?source=${selectedSourceId}` : '/'); renderSources(); loadFeed(); document.querySelector('#feed')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+function selectSource(sourceId) { const selectedSourceId = Number(sourceId) || null; trackEvent('feed_source_select', { source_id: selectedSourceId }); state.sourceId = selectedSourceId; state.topic = 'all'; syncTopicControls(); history.replaceState(null, '', selectedSourceId ? `/?source=${selectedSourceId}` : '/'); renderSources(); loadFeed(); }
 document.querySelectorAll('[data-topic]').forEach((button) => button.addEventListener('click', () => selectTopic(button.dataset.topic)));
 $('#themeToggle').addEventListener('click', () => document.body.classList.toggle('dark'));
 $('#sidebarTheme').addEventListener('click', () => document.body.classList.toggle('dark'));
