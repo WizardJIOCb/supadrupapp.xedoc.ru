@@ -59,7 +59,7 @@ const SOURCE_SEED = [
 const insertSource = db.prepare('INSERT OR IGNORE INTO sources (name, url, feed_url, accent) VALUES (?, ?, ?, ?)');
 SOURCE_SEED.forEach((source) => insertSource.run(...source));
 const TOPICS = ['models', 'dev', 'research', 'tools', 'games', 'business', 'media'];
-const RICH_MARKUP_VERSION = 8;
+const RICH_MARKUP_VERSION = 9;
 let lastRefresh = 0;
 let refreshPromise = null;
 
@@ -261,7 +261,7 @@ function safeExternalUrl(value, base) {
   } catch { return ''; }
 }
 function safeRichMarkup(html, base) {
-  const allowed = new Set(['p', 'h2', 'h3', 'h4', 'ul', 'ol', 'li', 'blockquote', 'strong', 'b', 'em', 'i', 'br', 'a', 'pre', 'code', 'figure', 'figcaption', 'img']);
+  const allowed = new Set(['p', 'h2', 'h3', 'h4', 'ul', 'ol', 'li', 'blockquote', 'strong', 'b', 'em', 'i', 'br', 'a', 'pre', 'code', 'figure', 'figcaption', 'img', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption', 'colgroup', 'col']);
   return String(html || '').replace(/<[^>]*>/g, (rawTag) => {
     const match = rawTag.match(/^<\s*(\/?)\s*([a-z0-9]+)/i);
     if (!match) return '';
@@ -270,6 +270,8 @@ function safeRichMarkup(html, base) {
     if (!allowed.has(name)) return '';
     if (name === 'pre') return closing ? '</pre>' : '<pre class="reader-code-block">';
     if (name === 'code') return closing ? '</code>' : '<code>';
+    if (name === 'table') return closing ? '</table></div>' : '<div class="reader-table-wrap"><table>';
+    if (name === 'col') return closing ? '' : '<col>';
     if (name === 'img') {
       if (closing) return '';
       const src = rawTag.match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
