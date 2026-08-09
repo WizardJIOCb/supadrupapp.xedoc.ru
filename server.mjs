@@ -45,6 +45,8 @@ const SOURCE_SEED = [
   ['Hugging Face', 'https://huggingface.co/blog', 'https://huggingface.co/blog/feed.xml', '#ffd35c'],
   ['GitHub Blog', 'https://github.blog/', 'https://github.blog/feed/', '#cbbaff'],
   ['Cloudflare', 'https://blog.cloudflare.com/', 'https://blog.cloudflare.com/rss/', '#ffaf79'],
+  ['vc.ru', 'https://vc.ru/', 'https://vc.ru/rss', '#ff7692'],
+  ['DTF', 'https://dtf.ru/', 'https://dtf.ru/rss/all', '#78c9f0'],
 ];
 const insertSource = db.prepare('INSERT OR IGNORE INTO sources (name, url, feed_url, accent) VALUES (?, ?, ?, ?)');
 SOURCE_SEED.forEach((source) => insertSource.run(...source));
