@@ -16,7 +16,7 @@
     <link rel="stylesheet" href="/styles.css?v=12" />
     <link rel="stylesheet" href="/reader.css?v=14" />
     <link rel="stylesheet" href="/layout.css" />
-    <link rel="stylesheet" href="/community.css?v=17" />
+    <link rel="stylesheet" href="/community.css?v=18" />
     <link rel="stylesheet" href="/replies.css?v=3" />
     <link rel="stylesheet" href="/publisher.css?v=5" />
     <link rel="stylesheet" href="/branding.css?v=2" />
@@ -65,10 +65,8 @@
       <div class="header-actions"><button class="search-button" id="searchButton" aria-label="Поиск по материалам">⌕ <span>Поиск</span><kbd>Ctrl K</kbd></button><button class="write-button" id="writeButton">Написать <span>+</span></button><button class="icon-button" id="themeToggle" aria-label="Переключить тему">◐</button><button class="account-button" id="profileButton" hidden>Профиль</button><button class="account-button" id="accountButton">Войти</button></div>
     </header>
     <main>
-      <section class="hero">
+      <section class="hero feed-status-only">
         <p class="eyebrow feed-status"><span><span class="live-dot"></span> <span id="refreshLabel">Собираем свежие публикации</span></span><button class="refresh-button" id="refreshButton">Обновить <span>↻</span></button></p>
-        <h1>supa</h1>
-        <div class="hero-copy"><p>Настройте ленту под свои интересы — модели, разработки, исследования и инструменты. Новые публикации приходят из выбранных источников.</p><button class="text-button" id="setupButton">Настроить мой поток <span>→</span></button></div>
       </section>
       <section class="topics" aria-label="Темы">
         <button class="topic active" data-topic="all">Всё</button><button class="topic" data-topic="models">Модели</button><button class="topic" data-topic="dev">Разработка</button><button class="topic" data-topic="research">Исследования</button><button class="topic" data-topic="tools">Инструменты</button><button class="topic" data-topic="games">Игры</button><button class="topic" data-topic="business">Бизнес</button><button class="topic" data-topic="media">Медиа</button>
@@ -96,6 +94,6 @@
     <dialog id="settingsDialog"><button class="dialog-close" data-close="settingsDialog" aria-label="Закрыть">×</button><p class="eyebrow">Персональная настройка</p><h2>Что вам интересно?</h2><p>Выберите язык, темы и источники — лента обновится сразу.</p><form id="settingsForm"><fieldset><legend>Язык материалов</legend><div class="check-grid language-grid"><label class="check"><input type="radio" name="language" value="ru" checked /><span>Русский</span></label><label class="check"><input type="radio" name="language" value="en" /><span>English</span></label></div></fieldset><fieldset><legend>Темы</legend><div class="check-grid" id="topicSettings"></div></fieldset><fieldset><legend>Источники</legend><div class="check-grid sources-checks" id="sourceSettings"></div></fieldset><button>Сохранить настройки</button></form><small class="form-message" id="settingsMessage"></small></dialog>
     <dialog id="imageDialog" class="image-dialog"><button class="dialog-close" id="imageDialogClose" aria-label="Закрыть изображение">×</button><img id="imageDialogImage" alt="" /></dialog>
     <dialog id="searchDialog" class="search-dialog"><button class="dialog-close" data-close="searchDialog" aria-label="Закрыть поиск">×</button><div class="search-dialog-head"><p class="eyebrow">Поиск по supa</p><h2>Найдите, что интересно.</h2><label class="search-field"><span>⌕</span><input id="searchInput" type="search" autocomplete="off" placeholder="Модели, игры, разработка…" /><kbd>Esc</kbd></label><select id="searchSource" aria-label="Источник для поиска"><option value="">Все источники и статьи сообщества</option></select></div><div class="search-results" id="searchResults"><p>Введите хотя бы два символа.</p></div></dialog>
-    <script src="/app.js?v=33"></script>
+    <script src="/app.js?v=34"></script>
   </body>
 </html>

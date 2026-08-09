@@ -228,7 +228,7 @@ $('#sidebarSettings').addEventListener('click', () => state.user ? openSettings(
 $('#writeButton').addEventListener('click', () => { location.href = '/write'; });
 $('#profileButton').addEventListener('click', () => { if (state.user) location.href = `/profile/${state.user.id}`; });
 $('#accountButton').addEventListener('click', () => state.user ? openSettings() : openAuth(true));
-$('#setupButton').addEventListener('click', openSettings); $('#sourcesSetup').addEventListener('click', openSettings);
+$('#setupButton')?.addEventListener('click', openSettings); $('#sourcesSetup').addEventListener('click', openSettings);
 $('#sourceFeedReset').addEventListener('click', () => selectSource(null));
 document.querySelectorAll('[data-best-period]').forEach((button) => button.addEventListener('click', () => selectBest(button.dataset.bestPeriod)));
 document.querySelectorAll('[data-feed-sort]').forEach((button) => button.addEventListener('click', () => selectFeedSort(button.dataset.feedSort)));
