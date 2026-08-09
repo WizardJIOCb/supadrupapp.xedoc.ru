@@ -16,10 +16,10 @@ mkdirSync(uploadsDir, { recursive: true });
 const db = new DatabaseSync(join(dataDir, 'news.db'));
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 db.exec(`
-  CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, is_admin INTEGER NOT NULL DEFAULT 0, is_banned INTEGER NOT NULL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS sources (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, feed_url TEXT NOT NULL UNIQUE, accent TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
-  CREATE TABLE IF NOT EXISTS articles (id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES sources(id), external_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, url TEXT NOT NULL, summary TEXT, category TEXT NOT NULL, published_at TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, view_count INTEGER NOT NULL DEFAULT 0, source_popularity_label TEXT NOT NULL DEFAULT '');
+  CREATE TABLE IF NOT EXISTS articles (id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES sources(id), external_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, url TEXT NOT NULL, summary TEXT, category TEXT NOT NULL, published_at TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, view_count INTEGER NOT NULL DEFAULT 0, source_popularity_label TEXT NOT NULL DEFAULT '', is_hidden INTEGER NOT NULL DEFAULT 0);
   CREATE INDEX IF NOT EXISTS articles_published_idx ON articles(published_at DESC);
   CREATE TABLE IF NOT EXISTS user_topics (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, topic TEXT NOT NULL, PRIMARY KEY (user_id, topic));
   CREATE TABLE IF NOT EXISTS user_sources (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (user_id, source_id));
@@ -30,11 +30,13 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS user_profiles (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, display_name TEXT NOT NULL, bio TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '');
   CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id INTEGER, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE INDEX IF NOT EXISTS comments_article_idx ON comments(article_id, created_at DESC);
-  CREATE TABLE IF NOT EXISTS user_posts (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, blocks_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, published_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, view_count INTEGER NOT NULL DEFAULT 0);
+  CREATE TABLE IF NOT EXISTS user_posts (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, blocks_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, published_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, view_count INTEGER NOT NULL DEFAULT 0, is_hidden INTEGER NOT NULL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS post_votes (post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE, poll_id TEXT NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, option_index INTEGER NOT NULL, PRIMARY KEY (post_id, poll_id, user_id));
   CREATE INDEX IF NOT EXISTS user_posts_published_idx ON user_posts(published_at DESC);
   CREATE TABLE IF NOT EXISTS post_comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id INTEGER, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE INDEX IF NOT EXISTS post_comments_post_idx ON post_comments(post_id, created_at DESC);
+  CREATE TABLE IF NOT EXISTS analytics_events (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, content_type TEXT, content_id INTEGER, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE INDEX IF NOT EXISTS analytics_events_kind_created_idx ON analytics_events(kind, created_at DESC);
 `);
 if (!db.prepare("SELECT name FROM pragma_table_info('comments') WHERE name = 'parent_id'").get()) db.exec('ALTER TABLE comments ADD COLUMN parent_id INTEGER');
 if (!db.prepare("SELECT name FROM pragma_table_info('user_profiles') WHERE name = 'bio'").get()) db.exec("ALTER TABLE user_profiles ADD COLUMN bio TEXT NOT NULL DEFAULT ''");
@@ -45,6 +47,11 @@ if (!db.prepare("SELECT name FROM pragma_table_info('user_posts') WHERE name = '
 if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup'").get()) db.exec("ALTER TABLE article_pages ADD COLUMN original_markup TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup_version'").get()) db.exec('ALTER TABLE article_pages ADD COLUMN original_markup_version INTEGER NOT NULL DEFAULT 1');
 if (!db.prepare("SELECT name FROM pragma_table_info('article_page_translations') WHERE name = 'markup'").get()) db.exec("ALTER TABLE article_page_translations ADD COLUMN markup TEXT NOT NULL DEFAULT ''");
+if (!db.prepare("SELECT name FROM pragma_table_info('users') WHERE name = 'is_admin'").get()) db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0');
+if (!db.prepare("SELECT name FROM pragma_table_info('users') WHERE name = 'is_banned'").get()) db.exec('ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0');
+if (!db.prepare("SELECT name FROM pragma_table_info('articles') WHERE name = 'is_hidden'").get()) db.exec('ALTER TABLE articles ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0');
+if (!db.prepare("SELECT name FROM pragma_table_info('user_posts') WHERE name = 'is_hidden'").get()) db.exec('ALTER TABLE user_posts ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0');
+db.prepare('UPDATE users SET is_admin = 1 WHERE id = 2').run();
 
 const SOURCE_SEED = [
   ['OpenAI', 'https://openai.com/news/', 'https://openai.com/news/rss.xml', '#cefa62'],
@@ -165,9 +172,9 @@ function userFromRequest(request) {
   const token = match?.[1];
   if (!token) return null;
   const hash = createHash('sha256').update(token).digest('hex');
-  const session = db.prepare('SELECT users.id, users.email, user_profiles.display_name AS displayName, sessions.expires_at AS expiresAt FROM sessions JOIN users ON users.id = sessions.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE sessions.token_hash = ?').get(hash);
-  if (!session || new Date(`${session.expiresAt.replace(' ', 'T')}Z`) <= new Date()) return null;
-  return { id: session.id, email: session.email, displayName: session.displayName || session.email.split('@')[0] };
+  const session = db.prepare('SELECT users.id, users.email, users.is_admin AS isAdmin, users.is_banned AS isBanned, user_profiles.display_name AS displayName, sessions.expires_at AS expiresAt FROM sessions JOIN users ON users.id = sessions.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE sessions.token_hash = ?').get(hash);
+  if (!session || session.isBanned || new Date(`${session.expiresAt.replace(' ', 'T')}Z`) <= new Date()) return null;
+  return { id: session.id, email: session.email, displayName: session.displayName || session.email.split('@')[0], isAdmin: Boolean(session.isAdmin) };
 }
 function json(response, status, body, headers = {}) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
@@ -205,6 +212,66 @@ function preferences(userId) {
     sources: db.prepare('SELECT source_id AS sourceId, enabled FROM user_sources WHERE user_id = ?').all(userId),
     language: setting?.language || 'ru',
   };
+}
+const recordAnalyticsEvent = db.prepare('INSERT INTO analytics_events (kind, content_type, content_id, user_id) VALUES (?, ?, ?, ?)');
+function requireAdmin(user, response) {
+  if (user?.isAdmin) return true;
+  json(response, 403, { error: 'Доступ только для администратора.' });
+  return false;
+}
+function isoDate(value, fallback) {
+  const text = String(value || '');
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) && !Number.isNaN(new Date(`${text}T00:00:00Z`).getTime()) ? text : fallback;
+}
+function dateDaysAgo(days) { return new Date(Date.now() - days * 86400000).toISOString().slice(0, 10); }
+function adminStats(fromParam, toParam) {
+  const to = isoDate(toParam, new Date().toISOString().slice(0, 10));
+  const from = isoDate(fromParam, dateDaysAgo(29));
+  if (from > to) throw new Error('Дата начала должна быть раньше даты окончания.');
+  const byDate = (sql) => new Map(db.prepare(sql).all(from, to).map((row) => [row.day, Number(row.count)]));
+  const views = byDate("SELECT date(created_at) AS day, COUNT(*) AS count FROM analytics_events WHERE kind = 'view' AND date(created_at) BETWEEN ? AND ? GROUP BY day");
+  const articles = byDate(`SELECT day, SUM(count) AS count FROM (
+    SELECT date(published_at) AS day, COUNT(*) AS count FROM articles WHERE is_hidden = 0 AND date(published_at) BETWEEN ?1 AND ?2 GROUP BY day
+    UNION ALL SELECT date(published_at) AS day, COUNT(*) AS count FROM user_posts WHERE is_hidden = 0 AND date(published_at) BETWEEN ?1 AND ?2 GROUP BY day
+  ) GROUP BY day`);
+  const comments = byDate(`SELECT day, SUM(count) AS count FROM (
+    SELECT date(created_at) AS day, COUNT(*) AS count FROM comments WHERE date(created_at) BETWEEN ?1 AND ?2 GROUP BY day
+    UNION ALL SELECT date(created_at) AS day, COUNT(*) AS count FROM post_comments WHERE date(created_at) BETWEEN ?1 AND ?2 GROUP BY day
+  ) GROUP BY day`);
+  const registrations = byDate('SELECT date(created_at) AS day, COUNT(*) AS count FROM users WHERE date(created_at) BETWEEN ? AND ? GROUP BY day');
+  const series = [];
+  for (let date = new Date(`${from}T00:00:00Z`); date <= new Date(`${to}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + 1)) {
+    const day = date.toISOString().slice(0, 10);
+    series.push({ date: day, views: views.get(day) || 0, articles: articles.get(day) || 0, comments: comments.get(day) || 0, registrations: registrations.get(day) || 0 });
+  }
+  const scalar = (sql) => Number(db.prepare(sql).get().count || 0);
+  return {
+    from, to, series,
+    totals: {
+      users: scalar('SELECT COUNT(*) AS count FROM users'),
+      articles: scalar('SELECT COUNT(*) AS count FROM articles WHERE is_hidden = 0') + scalar('SELECT COUNT(*) AS count FROM user_posts WHERE is_hidden = 0'),
+      comments: scalar('SELECT COUNT(*) AS count FROM comments') + scalar('SELECT COUNT(*) AS count FROM post_comments'),
+      views: scalar('SELECT COALESCE(SUM(view_count), 0) AS count FROM articles') + scalar('SELECT COALESCE(SUM(view_count), 0) AS count FROM user_posts'),
+    },
+  };
+}
+function adminUsers() {
+  return db.prepare(`SELECT users.id, users.email, users.is_admin AS isAdmin, users.is_banned AS isBanned, users.created_at AS createdAt,
+    COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS displayName,
+    (SELECT COUNT(*) FROM user_posts WHERE user_id = users.id) AS postCount,
+    (SELECT COUNT(*) FROM comments WHERE user_id = users.id) + (SELECT COUNT(*) FROM post_comments WHERE user_id = users.id) AS commentCount
+    FROM users LEFT JOIN user_profiles ON user_profiles.user_id = users.id ORDER BY datetime(users.created_at) DESC LIMIT 300`).all().map((row) => ({ ...row, isAdmin: Boolean(row.isAdmin), isBanned: Boolean(row.isBanned) }));
+}
+function adminContent() {
+  return db.prepare(`SELECT * FROM (
+    SELECT 'article' AS kind, articles.id, articles.title, sources.name AS sourceName, articles.published_at AS publishedAt, articles.view_count AS viewCount,
+      (SELECT COUNT(*) FROM comments WHERE article_id = articles.id) AS commentCount, articles.is_hidden AS isHidden
+      FROM articles JOIN sources ON sources.id = articles.source_id
+    UNION ALL
+    SELECT 'post' AS kind, user_posts.id, user_posts.title, COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS sourceName, user_posts.published_at AS publishedAt, user_posts.view_count AS viewCount,
+      (SELECT COUNT(*) FROM post_comments WHERE post_id = user_posts.id) AS commentCount, user_posts.is_hidden AS isHidden
+      FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id
+  ) ORDER BY datetime(publishedAt) DESC LIMIT 300`).all().map((row) => ({ ...row, isHidden: Boolean(row.isHidden) }));
 }
 async function translateArticle(article, language) {
   if (language === 'en') return article;
@@ -463,7 +530,7 @@ async function translateMarkup(markup, language, base) {
   return safeRichMarkup(result, base);
 }
 async function articlePage(user, articleId) {
-  const article = db.prepare('SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE articles.id = ?').get(articleId);
+  const article = db.prepare('SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE articles.id = ? AND articles.is_hidden = 0').get(articleId);
   if (!article) return null;
   const language = user ? preferences(user.id).language : 'ru';
   const original = await loadOriginalPage(article);
@@ -540,7 +607,7 @@ function postsForFeed() {
   return db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt, user_posts.view_count AS viewCount,
     (SELECT COUNT(*) FROM post_comments WHERE post_comments.post_id = user_posts.id) AS commentCount,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
-    FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id ORDER BY datetime(user_posts.published_at) DESC LIMIT 20`).all().map(postRow);
+    FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE user_posts.is_hidden = 0 ORDER BY datetime(user_posts.published_at) DESC LIMIT 20`).all().map(postRow);
 }
 function pollResults(postId, blocks, userId) {
   const votes = db.prepare('SELECT poll_id AS pollId, option_index AS optionIndex, COUNT(*) AS count FROM post_votes WHERE post_id = ? GROUP BY poll_id, option_index').all(postId);
@@ -553,7 +620,7 @@ function pollResults(postId, blocks, userId) {
 function postById(postId, user) {
   const post = db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt, user_posts.view_count AS viewCount,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
-    FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE user_posts.id = ?`).get(postId);
+    FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE user_posts.id = ? AND user_posts.is_hidden = 0`).get(postId);
   if (!post) return null;
   const result = postRow(post);
   return { ...result, polls: pollResults(result.id, result.blocks, user?.id) };
@@ -563,7 +630,7 @@ function profileById(userId) {
     COALESCE(user_profiles.bio, '') AS bio, COALESCE(user_profiles.avatar_url, '') AS avatarUrl, users.created_at AS createdAt
     FROM users LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE users.id = ?`).get(userId);
   if (!profile) return null;
-  const posts = db.prepare(`SELECT id, title, blocks_json AS blocksJson, published_at AS publishedAt FROM user_posts WHERE user_id = ? ORDER BY datetime(published_at) DESC`).all(userId).map(postRow);
+  const posts = db.prepare(`SELECT id, title, blocks_json AS blocksJson, published_at AS publishedAt FROM user_posts WHERE user_id = ? AND is_hidden = 0 ORDER BY datetime(published_at) DESC`).all(userId).map(postRow);
   const comments = db.prepare(`SELECT * FROM (
     SELECT comments.id, comments.body, comments.created_at AS createdAt, articles.id AS targetId, articles.title AS targetTitle, 'article' AS targetKind
     FROM comments JOIN articles ON articles.id = comments.article_id WHERE comments.user_id = ?
@@ -581,7 +648,7 @@ async function feed(user, topic, sourceId) {
   const disabledSources = selected.sources.filter((row) => !row.enabled).map((row) => row.sourceId);
   let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, articles.source_popularity_label AS sourcePopularityLabel,
     (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id) AS commentCount,
-    sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE 1=1`;
+    sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE articles.is_hidden = 0`;
   const params = [];
   if (hasSourceFilter) { query += ' AND articles.source_id = ?'; params.push(requestedSourceId); }
   else if (topics.length) { query += ` AND articles.category IN (${topics.map(() => '?').join(',')})`; params.push(...topics); }
@@ -597,7 +664,7 @@ async function highlights(user, period, sourceId) {
   const selectedSourceId = Number(sourceId) || null;
   let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, articles.source_popularity_label AS sourcePopularityLabel,
     (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id) AS commentCount,
-    sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE sources.enabled = 1`;
+    sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE sources.enabled = 1 AND articles.is_hidden = 0`;
   const params = [];
   if (selectedSourceId) { query += ' AND articles.source_id = ?'; params.push(selectedSourceId); }
   query += ' ORDER BY datetime(articles.published_at) DESC LIMIT 400';
@@ -628,6 +695,36 @@ async function api(request, response, url) {
   const user = userFromRequest(request);
   if (request.method === 'GET' && url.pathname === '/api/health') return json(response, 200, { ok: true });
   if (request.method === 'GET' && url.pathname === '/api/me') return json(response, 200, { user, preferences: user ? preferences(user.id) : null });
+  if (url.pathname.startsWith('/api/admin/')) {
+    if (!requireAdmin(user, response)) return;
+    if (request.method === 'GET' && url.pathname === '/api/admin/stats') {
+      try { return json(response, 200, adminStats(url.searchParams.get('from'), url.searchParams.get('to'))); }
+      catch (error) { return badRequest(response, error.message); }
+    }
+    if (request.method === 'GET' && url.pathname === '/api/admin/users') return json(response, 200, { users: adminUsers() });
+    if (request.method === 'GET' && url.pathname === '/api/admin/content') return json(response, 200, { content: adminContent() });
+    const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/(\d+)$/);
+    if (request.method === 'PUT' && adminUserMatch) {
+      const userId = Number(adminUserMatch[1]);
+      const target = db.prepare('SELECT id, is_admin AS isAdmin, is_banned AS isBanned FROM users WHERE id = ?').get(userId);
+      if (!target) return json(response, 404, { error: 'Пользователь не найден.' });
+      const changes = await body(request);
+      const isAdmin = typeof changes.isAdmin === 'boolean' ? changes.isAdmin : Boolean(target.isAdmin);
+      const isBanned = typeof changes.isBanned === 'boolean' ? changes.isBanned : Boolean(target.isBanned);
+      if (userId === user.id && !isAdmin) return badRequest(response, 'Нельзя снять с себя права администратора.');
+      db.prepare('UPDATE users SET is_admin = ?, is_banned = ? WHERE id = ?').run(Number(isAdmin), Number(isBanned), userId);
+      return json(response, 200, { users: adminUsers() });
+    }
+    const adminContentMatch = url.pathname.match(/^\/api\/admin\/content\/(articles|posts)\/(\d+)$/);
+    if (request.method === 'PUT' && adminContentMatch) {
+      const { isHidden } = await body(request);
+      if (typeof isHidden !== 'boolean') return badRequest(response, 'Передайте статус видимости.');
+      const table = adminContentMatch[1] === 'articles' ? 'articles' : 'user_posts';
+      const result = db.prepare(`UPDATE ${table} SET is_hidden = ? WHERE id = ?`).run(Number(isHidden), Number(adminContentMatch[2]));
+      return result.changes ? json(response, 200, { ok: true }) : json(response, 404, { error: 'Материал не найден.' });
+    }
+    return json(response, 404, { error: 'Раздел админки не найден.' });
+  }
   if (request.method === 'PUT' && url.pathname === '/api/profile') {
     if (!user) return json(response, 401, { error: 'Войдите, чтобы изменить профиль.' });
     const { displayName = '', bio = '', avatarUrl } = await body(request);
@@ -682,8 +779,9 @@ async function api(request, response, url) {
   const postMatch = url.pathname.match(/^\/api\/posts\/(\d+)$/);
   if (request.method === 'GET' && postMatch) {
     const postId = Number(postMatch[1]);
-    db.prepare('UPDATE user_posts SET view_count = view_count + 1 WHERE id = ?').run(postId);
+    db.prepare('UPDATE user_posts SET view_count = view_count + 1 WHERE id = ? AND is_hidden = 0').run(postId);
     const post = postById(postId, user);
+    if (post) recordAnalyticsEvent.run('view', 'post', postId, user?.id || null);
     return post ? json(response, 200, { post }) : json(response, 404, { error: 'Публикация не найдена.' });
   }
   const voteMatch = url.pathname.match(/^\/api\/posts\/(\d+)\/polls\/([a-zA-Z0-9-]+)\/vote$/);
@@ -733,8 +831,9 @@ async function api(request, response, url) {
   const articleMatch = url.pathname.match(/^\/api\/articles\/(\d+)$/);
   if (request.method === 'GET' && articleMatch) {
     const articleId = Number(articleMatch[1]);
-    db.prepare('UPDATE articles SET view_count = view_count + 1 WHERE id = ?').run(articleId);
+    db.prepare('UPDATE articles SET view_count = view_count + 1 WHERE id = ? AND is_hidden = 0').run(articleId);
     const article = await articlePage(user, articleId);
+    if (article) recordAnalyticsEvent.run('view', 'article', articleId, user?.id || null);
     return article ? json(response, 200, { article }) : json(response, 404, { error: 'Статья не найдена.' });
   }
   if (request.method === 'POST' && url.pathname === '/api/refresh') {
@@ -749,16 +848,16 @@ async function api(request, response, url) {
     if (password.length < 8) return badRequest(response, 'Пароль должен содержать не менее 8 символов.');
     try {
       const result = db.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)').run(normalized, await hashPassword(password));
-      const user = { id: Number(result.lastInsertRowid), email: normalized, displayName: name };
+      const user = { id: Number(result.lastInsertRowid), email: normalized, displayName: name, isAdmin: false };
       db.prepare('INSERT INTO user_profiles (user_id, display_name) VALUES (?, ?)').run(user.id, name);
       return createUserSession(response, user);
     } catch { return badRequest(response, 'Пользователь с таким email уже существует.'); }
   }
   if (request.method === 'POST' && url.pathname === '/api/auth/login') {
     const { email = '', password = '' } = await body(request);
-    const userRecord = db.prepare('SELECT users.id, users.email, users.password_hash, user_profiles.display_name AS displayName FROM users LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE users.email = ?').get(email.trim().toLowerCase());
+    const userRecord = db.prepare('SELECT users.id, users.email, users.password_hash, users.is_admin AS isAdmin, user_profiles.display_name AS displayName FROM users LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE users.email = ?').get(email.trim().toLowerCase());
     if (!userRecord || !(await passwordMatches(password, userRecord.password_hash))) return json(response, 401, { error: 'Неверный email или пароль.' });
-    return createUserSession(response, { id: userRecord.id, email: userRecord.email, displayName: userRecord.displayName || userRecord.email.split('@')[0] });
+    return createUserSession(response, { id: userRecord.id, email: userRecord.email, displayName: userRecord.displayName || userRecord.email.split('@')[0], isAdmin: Boolean(userRecord.isAdmin) });
   }
   if (request.method === 'POST' && url.pathname === '/api/auth/logout') {
     const token = (request.headers.cookie || '').match(/(?:^|;\s*)signal_session=([^;]+)/)?.[1];
@@ -786,7 +885,7 @@ async function api(request, response, url) {
   return json(response, 404, { error: 'Не найдено.' });
 }
 async function staticFile(request, response, path) {
-  const requested = path === '/' || path === '/write' || path === '/about' || /^(\/article|\/post|\/profile)\/\d+$/.test(path) ? 'index.html' : path.slice(1);
+  const requested = path === '/' || path === '/write' || path === '/about' || path === '/admin' || /^(\/article|\/post|\/profile)\/\d+$/.test(path) ? 'index.html' : path.slice(1);
   if (!['index.html', 'styles.css', 'reader.css', 'layout.css', 'community.css', 'replies.css', 'publisher.css', 'branding.css', 'sidebar.css', 'favicon.svg', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
   try {
     const file = await readFile(join(staticDir, requested));
