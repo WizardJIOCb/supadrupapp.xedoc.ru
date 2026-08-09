@@ -34,8 +34,11 @@ function renderSources() {
   $('#sourceList').innerHTML = state.sources.map((source) => `<a class="source" href="${escapeHtml(source.url)}" target="_blank" rel="noopener"><span class="source-logo" style="background:${escapeHtml(source.accent)}">${escapeHtml(source.name.slice(0, 2).toUpperCase())}</span><span><strong>${escapeHtml(source.name)}</strong><small>Открыть источник</small></span><b>↗</b></a>`).join('');
 }
 function renderProfile() {
-  $('#accountButton').textContent = state.user ? 'Настройки' : 'Войти';
-  $('#profileContent').innerHTML = state.user ? `<div class="profile-email">${escapeHtml(state.user.email)}</div><p>Язык: ${state.preferences.language === 'en' ? 'English' : 'Русский'}<br />Темы: ${state.preferences.topics.length ? state.preferences.topics.map((topic) => labels[topic]).join(', ') : 'все'}</p><button class="subscribe-button" id="profileSettings">Изменить поток <span>→</span></button><button class="logout-button" id="logoutButton">Выйти</button>` : '<p>Войдите, чтобы выбирать темы, источники и язык своей ленты.</p><button class="subscribe-button" id="profileLogin">Создать аккаунт <span>↗</span></button>';
+  const accountButton = $('#accountButton');
+  if (accountButton) accountButton.textContent = state.user ? 'Настройки' : 'Войти';
+  const profileContent = $('#profileContent');
+  if (!profileContent) return;
+  profileContent.innerHTML = state.user ? `<div class="profile-email">${escapeHtml(state.user.email)}</div><p>Язык: ${state.preferences.language === 'en' ? 'English' : 'Русский'}<br />Темы: ${state.preferences.topics.length ? state.preferences.topics.map((topic) => labels[topic]).join(', ') : 'все'}</p><button class="subscribe-button" id="profileSettings">Изменить поток <span>→</span></button><button class="logout-button" id="logoutButton">Выйти</button>` : '<p>Войдите, чтобы выбирать темы, источники и язык своей ленты.</p><button class="subscribe-button" id="profileLogin">Создать аккаунт <span>↗</span></button>';
   $('#profileLogin')?.addEventListener('click', () => openAuth(false));
   $('#profileSettings')?.addEventListener('click', openSettings);
   $('#logoutButton')?.addEventListener('click', logout);
