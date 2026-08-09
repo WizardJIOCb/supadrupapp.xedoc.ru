@@ -578,6 +578,17 @@ function postCommentsFor(postId) {
   comments.forEach((comment) => { const parent = comment.parentId ? byId.get(comment.parentId) : null; (parent ? parent.replies : roots).push(comment); });
   return roots;
 }
+function deleteCommentThread(user, table, scopeColumn, scopeId, commentId) {
+  const target = db.prepare(`SELECT id, user_id AS userId FROM ${table} WHERE id = ? AND ${scopeColumn} = ?`).get(commentId, scopeId);
+  if (!target) return { error: 'Комментарий не найден.', status: 404 };
+  if (target.userId !== user.id && !user.isAdmin) return { error: 'Можно удалить только свой комментарий.', status: 403 };
+  db.prepare(`WITH RECURSIVE branch(id) AS (
+    SELECT id FROM ${table} WHERE id = ? AND ${scopeColumn} = ?
+    UNION ALL
+    SELECT child.id FROM ${table} AS child JOIN branch ON child.parent_id = branch.id WHERE child.${scopeColumn} = ?
+  ) DELETE FROM ${table} WHERE id IN (SELECT id FROM branch)`).run(commentId, scopeId, scopeId);
+  return { ok: true };
+}
 function safeBlocks(rawBlocks) {
   if (!Array.isArray(rawBlocks) || rawBlocks.length < 1 || rawBlocks.length > 60) throw new Error('Добавьте от 1 до 60 блоков.');
   return rawBlocks.map((block) => {
@@ -840,6 +851,12 @@ async function api(request, response, url) {
     db.prepare('INSERT INTO comments (article_id, user_id, parent_id, body) VALUES (?, ?, ?, ?)').run(Number(commentsMatch[1]), user.id, parent, text);
     return json(response, 201, { comments: commentsFor(Number(commentsMatch[1])) });
   }
+  const articleCommentDeleteMatch = url.pathname.match(/^\/api\/articles\/(\d+)\/comments\/(\d+)$/);
+  if (request.method === 'DELETE' && articleCommentDeleteMatch) {
+    if (!user) return json(response, 401, { error: 'Войдите, чтобы удалить комментарий.' });
+    const result = deleteCommentThread(user, 'comments', 'article_id', Number(articleCommentDeleteMatch[1]), Number(articleCommentDeleteMatch[2]));
+    return result.ok ? json(response, 200, { comments: commentsFor(Number(articleCommentDeleteMatch[1])) }) : json(response, result.status, { error: result.error });
+  }
   const postCommentsMatch = url.pathname.match(/^\/api\/posts\/(\d+)\/comments$/);
   if (request.method === 'GET' && postCommentsMatch) return json(response, 200, { comments: postCommentsFor(Number(postCommentsMatch[1])) });
   if (request.method === 'POST' && postCommentsMatch) {
@@ -853,6 +870,12 @@ async function api(request, response, url) {
     if (parent !== null && (!Number.isInteger(parent) || !db.prepare('SELECT id FROM post_comments WHERE id = ? AND post_id = ?').get(parent, postId))) return badRequest(response, 'Комментарий, на который вы отвечаете, не найден.');
     db.prepare('INSERT INTO post_comments (post_id, user_id, parent_id, body) VALUES (?, ?, ?, ?)').run(postId, user.id, parent, text);
     return json(response, 201, { comments: postCommentsFor(postId) });
+  }
+  const postCommentDeleteMatch = url.pathname.match(/^\/api\/posts\/(\d+)\/comments\/(\d+)$/);
+  if (request.method === 'DELETE' && postCommentDeleteMatch) {
+    if (!user) return json(response, 401, { error: 'Войдите, чтобы удалить комментарий.' });
+    const result = deleteCommentThread(user, 'post_comments', 'post_id', Number(postCommentDeleteMatch[1]), Number(postCommentDeleteMatch[2]));
+    return result.ok ? json(response, 200, { comments: postCommentsFor(Number(postCommentDeleteMatch[1])) }) : json(response, result.status, { error: result.error });
   }
   const articleMatch = url.pathname.match(/^\/api\/articles\/(\d+)$/);
   if (request.method === 'GET' && articleMatch) {
