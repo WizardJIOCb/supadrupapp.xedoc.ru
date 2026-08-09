@@ -138,6 +138,39 @@ function renderSources() {
   $('#sourceList').innerHTML = state.sources.map((source) => { const query = new URLSearchParams({ source: source.id }); if (state.bestPeriod) query.set('best', state.bestPeriod); return `<a class="source ${state.sourceId === source.id ? 'active' : ''}" href="/?${query}" data-source-filter="${source.id}"><span class="source-logo" style="background:${escapeHtml(source.accent)}">${escapeHtml(source.name.slice(0, 2).toUpperCase())}</span><span><strong>${escapeHtml(source.name)}</strong><small>${state.bestPeriod ? 'Лучшее за период' : 'Последние материалы'}</small></span><b>→</b></a>`; }).join('');
   document.querySelectorAll('[data-source-filter]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); selectSource(Number(event.currentTarget.dataset.sourceFilter)); }));
 }
+let searchDelay = 0;
+function searchResultMarkup(item) {
+  const isPost = item.kind === 'post';
+  const href = isPost ? `/post/${item.id}` : `/article/${item.id}`;
+  const kind = isPost ? 'Статья' : (labels[item.category] || 'Материал');
+  const author = isPost ? item.author : item.sourceName;
+  return `<a class="search-result" href="${href}"><div class="search-result-top"><span class="tag ${isPost ? 'tools' : item.category}">${kind}</span><span>${escapeHtml(author || '')}</span></div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary || 'Открыть материал')}</p><small>${relativeDate(item.publishedAt)} · ◉ ${metricCount(item.viewCount)} · ◌ ${metricCount(item.commentCount)}</small></a>`;
+}
+async function runSearch() {
+  const input = $('#searchInput');
+  const results = $('#searchResults');
+  const query = input.value.trim();
+  if (query.length < 2) { results.innerHTML = '<p>Введите хотя бы два символа.</p>'; return; }
+  results.innerHTML = '<p>Ищем материалы…</p>';
+  try {
+    const params = new URLSearchParams({ q: query });
+    if ($('#searchSource').value) params.set('source', $('#searchSource').value);
+    const { items } = await request(`/api/search?${params}`);
+    if (input.value.trim() !== query) return;
+    results.innerHTML = items.length ? items.map(searchResultMarkup).join('') : '<p>Ничего не найдено. Попробуйте другое слово или снимите фильтр источника.</p>';
+  } catch (error) { results.innerHTML = `<p>${escapeHtml(error.message)}</p>`; }
+}
+function openSearch() {
+  const dialog = $('#searchDialog');
+  if (!dialog.open) dialog.showModal();
+  $('#searchSource').innerHTML = `<option value="">Все источники и статьи сообщества</option>${state.sources.map((source) => `<option value="${source.id}">${escapeHtml(source.name)}</option>`).join('')}`;
+  setTimeout(() => $('#searchInput').focus(), 0);
+}
+$('#searchButton').addEventListener('click', openSearch);
+$('#sidebarSearch').addEventListener('click', openSearch);
+$('#searchInput').addEventListener('input', () => { clearTimeout(searchDelay); searchDelay = setTimeout(runSearch, 180); });
+$('#searchSource').addEventListener('change', runSearch);
+document.addEventListener('keydown', (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openSearch(); } });
 function renderProfile() {
   const accountButton = $('#accountButton');
   if (accountButton) accountButton.textContent = state.user ? 'Настройки' : 'Войти';

@@ -691,6 +691,31 @@ async function highlights(user, period, sourceId) {
   }
   return { articles: await translateArticles(articles, language), language, sourceId: selectedSourceId, period: days === 1 ? 'day' : days === 7 ? 'week' : 'month' };
 }
+async function searchContent(user, query, sourceId) {
+  const text = String(query || '').trim().replace(/\s+/g, ' ').slice(0, 100);
+  if (text.length < 2) return { items: [], language: user ? preferences(user.id).language : 'ru' };
+  const like = `%${text}%`;
+  const selectedSourceId = Number(sourceId) || null;
+  let articleSql = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount,
+    (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id) AS commentCount, sources.id AS sourceId, sources.name AS sourceName, sources.accent
+    FROM articles JOIN sources ON sources.id = articles.source_id
+    WHERE articles.is_hidden = 0 AND sources.enabled = 1 AND (articles.title LIKE ? OR COALESCE(articles.summary, '') LIKE ? OR articles.url LIKE ?)`;
+  const articleParams = [like, like, like];
+  if (selectedSourceId) { articleSql += ' AND articles.source_id = ?'; articleParams.push(selectedSourceId); }
+  articleSql += ' ORDER BY CASE WHEN articles.title LIKE ? THEN 0 ELSE 1 END, datetime(articles.published_at) DESC LIMIT 30';
+  articleParams.push(like);
+  const articleRows = db.prepare(articleSql).all(...articleParams);
+  const postRows = selectedSourceId ? [] : db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt, user_posts.view_count AS viewCount,
+    (SELECT COUNT(*) FROM post_comments WHERE post_comments.post_id = user_posts.id) AS commentCount,
+    COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
+    FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id
+    WHERE user_posts.is_hidden = 0 AND (user_posts.title LIKE ? OR user_posts.blocks_json LIKE ?)
+    ORDER BY CASE WHEN user_posts.title LIKE ? THEN 0 ELSE 1 END, datetime(user_posts.published_at) DESC LIMIT 20`).all(like, like, like);
+  const posts = postRows.map(postRow).map((post) => ({ ...post, kind: 'post', sourceName: post.author, summary: post.blocks.find((block) => block.type === 'paragraph' || block.type === 'quote')?.text || 'Авторская публикация.' }));
+  const language = user ? preferences(user.id).language : 'ru';
+  const articles = await translateArticles(articleRows, language);
+  return { items: [...articles.map((article) => ({ ...article, kind: 'article' })), ...posts].sort((left, right) => new Date(right.publishedAt) - new Date(left.publishedAt)).slice(0, 36), language };
+}
 async function api(request, response, url) {
   const user = userFromRequest(request);
   if (request.method === 'GET' && url.pathname === '/api/health') return json(response, 200, { ok: true });
@@ -744,6 +769,7 @@ async function api(request, response, url) {
     return result ? json(response, 200, result) : json(response, 404, { error: 'Профиль не найден.' });
   }
   if (request.method === 'GET' && url.pathname === '/api/sources') return json(response, 200, { sources: db.prepare('SELECT id, name, url, accent FROM sources WHERE enabled = 1 ORDER BY id').all() });
+  if (request.method === 'GET' && url.pathname === '/api/search') return json(response, 200, await searchContent(user, url.searchParams.get('q'), url.searchParams.get('source')));
   const uploadMatch = url.pathname.match(/^\/api\/uploads\/([a-z0-9-]+\.(?:png|jpg|webp))$/i);
   if (request.method === 'GET' && uploadMatch) {
     try {
