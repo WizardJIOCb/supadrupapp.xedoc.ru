@@ -1,4 +1,4 @@
-const state = { user: null, preferences: { topics: [], sources: [] }, sources: [], topic: 'all', isLogin: true };
+const state = { user: null, preferences: { topics: [], sources: [], language: 'ru' }, sources: [], topic: 'all', isLogin: true };
 const labels = { models: 'Модели', dev: 'Dev', research: 'Research', tools: 'Tools' };
 const topicChoices = [['models', 'Модели и LLM'], ['dev', 'Разработка'], ['research', 'Исследования'], ['tools', 'Инструменты']];
 const $ = (selector) => document.querySelector(selector);
@@ -32,7 +32,7 @@ function renderSources() {
 }
 function renderProfile() {
   $('#accountButton').textContent = state.user ? 'Настройки' : 'Войти';
-  $('#profileContent').innerHTML = state.user ? `<div class="profile-email">${escapeHtml(state.user.email)}</div><p>Темы: ${state.preferences.topics.length ? state.preferences.topics.map((topic) => labels[topic]).join(', ') : 'все'}</p><button class="subscribe-button" id="profileSettings">Изменить поток <span>→</span></button><button class="logout-button" id="logoutButton">Выйти</button>` : '<p>Войдите, чтобы выбирать темы и получать персональную подборку.</p><button class="subscribe-button" id="profileLogin">Создать аккаунт <span>↗</span></button>';
+  $('#profileContent').innerHTML = state.user ? `<div class="profile-email">${escapeHtml(state.user.email)}</div><p>Язык: ${state.preferences.language === 'en' ? 'English' : 'Русский'}<br />Темы: ${state.preferences.topics.length ? state.preferences.topics.map((topic) => labels[topic]).join(', ') : 'все'}</p><button class="subscribe-button" id="profileSettings">Изменить поток <span>→</span></button><button class="logout-button" id="logoutButton">Выйти</button>` : '<p>Войдите, чтобы выбирать темы, источники и язык своей ленты.</p><button class="subscribe-button" id="profileLogin">Создать аккаунт <span>↗</span></button>';
   $('#profileLogin')?.addEventListener('click', () => openAuth(false));
   $('#profileSettings')?.addEventListener('click', openSettings);
   $('#logoutButton')?.addEventListener('click', logout);
@@ -50,12 +50,13 @@ function openSettings() {
   if (!state.user) return openAuth(false);
   const topicSet = new Set(state.preferences.topics);
   const sourceMap = new Map(state.preferences.sources.map((item) => [item.sourceId, Boolean(item.enabled)]));
+  $(`input[name="language"][value="${state.preferences.language || 'ru'}"]`).checked = true;
   $('#topicSettings').innerHTML = topicChoices.map(([key, name]) => `<label class="check"><input type="checkbox" name="topic" value="${key}" ${topicSet.has(key) ? 'checked' : ''}/><span>${name}</span></label>`).join('');
   $('#sourceSettings').innerHTML = state.sources.map((source) => `<label class="check"><input type="checkbox" name="source" value="${source.id}" ${sourceMap.get(source.id) !== false ? 'checked' : ''}/><span>${escapeHtml(source.name)}</span></label>`).join('');
   $('#settingsMessage').textContent = '';
   $('#settingsDialog').showModal();
 }
-async function logout() { await request('/api/auth/logout', { method: 'POST' }); state.user = null; state.preferences = { topics: [], sources: [] }; renderProfile(); loadFeed(); }
+async function logout() { await request('/api/auth/logout', { method: 'POST' }); state.user = null; state.preferences = { topics: [], sources: [], language: 'ru' }; renderProfile(); loadFeed(); }
 
 document.querySelectorAll('.topic').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('.topic').forEach((item) => item.classList.remove('active')); button.classList.add('active'); state.topic = button.dataset.topic; loadFeed(); }));
 $('#themeToggle').addEventListener('click', () => document.body.classList.toggle('dark'));
@@ -65,7 +66,7 @@ $('#profileLogin')?.addEventListener('click', () => openAuth(false));
 $('#authSwitch').addEventListener('click', () => openAuth(!state.isLogin));
 document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => $(`#${button.dataset.close}`).close()));
 $('#authForm').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { const result = await request(state.isLogin ? '/api/auth/login' : '/api/auth/register', { method: 'POST', body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) }); state.user = result.user; const me = await request('/api/me'); state.preferences = me.preferences; $('#authDialog').close(); renderProfile(); openSettings(); loadFeed(); } catch (error) { $('#authMessage').textContent = error.message; } });
-$('#settingsForm').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); const topics = form.getAll('topic'); const enabled = new Set(form.getAll('source').map(Number)); const sources = state.sources.map((source) => ({ sourceId: source.id, enabled: enabled.has(source.id) })); try { const result = await request('/api/preferences', { method: 'PUT', body: JSON.stringify({ topics, sources }) }); state.preferences = result.preferences; $('#settingsMessage').textContent = 'Настройки сохранены.'; renderProfile(); loadFeed(); setTimeout(() => $('#settingsDialog').close(), 500); } catch (error) { $('#settingsMessage').textContent = error.message; } });
+$('#settingsForm').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); const topics = form.getAll('topic'); const enabled = new Set(form.getAll('source').map(Number)); const sources = state.sources.map((source) => ({ sourceId: source.id, enabled: enabled.has(source.id) })); const language = form.get('language'); try { const result = await request('/api/preferences', { method: 'PUT', body: JSON.stringify({ topics, sources, language }) }); state.preferences = result.preferences; $('#settingsMessage').textContent = 'Настройки сохранены.'; renderProfile(); loadFeed(); setTimeout(() => $('#settingsDialog').close(), 500); } catch (error) { $('#settingsMessage').textContent = error.message; } });
 $('#refreshButton').addEventListener('click', async (event) => { event.currentTarget.disabled = true; event.currentTarget.innerHTML = 'Обновляем…'; try { await request('/api/refresh', { method: 'POST' }); await loadFeed(); } finally { event.currentTarget.disabled = false; event.currentTarget.innerHTML = 'Обновить <span>↻</span>'; } });
 
 async function init() { try { const [me, sources] = await Promise.all([request('/api/me'), request('/api/sources')]); state.user = me.user; state.preferences = me.preferences || state.preferences; state.sources = sources.sources; renderSources(); renderProfile(); await loadFeed(); } catch (error) { $('#articleList').innerHTML = `<div class="empty-state"><strong>Не удалось загрузить ленту.</strong><span>${escapeHtml(error.message)}</span></div>`; } }

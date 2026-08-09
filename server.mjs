@@ -21,6 +21,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS articles_published_idx ON articles(published_at DESC);
   CREATE TABLE IF NOT EXISTS user_topics (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, topic TEXT NOT NULL, PRIMARY KEY (user_id, topic));
   CREATE TABLE IF NOT EXISTS user_sources (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (user_id, source_id));
+  CREATE TABLE IF NOT EXISTS user_settings (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, language TEXT NOT NULL DEFAULT 'ru' CHECK(language IN ('ru', 'en')));
+  CREATE TABLE IF NOT EXISTS translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, summary TEXT, PRIMARY KEY (article_id, language));
 `);
 
 const SOURCE_SEED = [
@@ -129,28 +131,67 @@ async function passwordMatches(password, stored) {
   return timingSafeEqual(Buffer.from(hash, 'hex'), actual);
 }
 function preferences(userId) {
+  const setting = db.prepare('SELECT language FROM user_settings WHERE user_id = ?').get(userId);
   return {
     topics: db.prepare('SELECT topic FROM user_topics WHERE user_id = ?').all(userId).map((row) => row.topic),
     sources: db.prepare('SELECT source_id AS sourceId, enabled FROM user_sources WHERE user_id = ?').all(userId),
+    language: setting?.language || 'ru',
   };
 }
-function feed(user, topic) {
-  const selected = user ? preferences(user.id) : { topics: [], sources: [] };
+async function translateArticle(article, language) {
+  if (language === 'en') return article;
+  const cached = db.prepare('SELECT title, summary FROM translations WHERE article_id = ? AND language = ?').get(article.id, language);
+  if (cached) return { ...article, title: cached.title, summary: cached.summary || article.summary };
+  const divider = '\n\n=====|=====\n\n';
+  try {
+    const url = new URL('https://translate.googleapis.com/translate_a/single');
+    url.searchParams.set('client', 'gtx');
+    url.searchParams.set('sl', 'auto');
+    url.searchParams.set('tl', language);
+    url.searchParams.set('dt', 't');
+    url.searchParams.set('q', `${article.title}${divider}${article.summary || ''}`);
+    const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
+    if (!response.ok) throw new Error(`Translation HTTP ${response.status}`);
+    const data = await response.json();
+    const translated = (data[0] || []).map((part) => part[0]).join('');
+    const [title, summary] = translated.split('=====|=====');
+    if (!title || summary === undefined) throw new Error('Translation response is incomplete');
+    const translatedArticle = { ...article, title: title.trim(), summary: summary.trim() };
+    db.prepare('INSERT OR REPLACE INTO translations (article_id, language, title, summary) VALUES (?, ?, ?, ?)').run(article.id, language, translatedArticle.title, translatedArticle.summary);
+    return translatedArticle;
+  } catch (error) {
+    console.error(`Could not translate article ${article.id}: ${error.message}`);
+    return article;
+  }
+}
+async function translateArticles(articles, language) {
+  const result = [];
+  const queue = [...articles];
+  const worker = async () => { while (queue.length) result.push(await translateArticle(queue.shift(), language)); };
+  await Promise.all(Array.from({ length: Math.min(6, articles.length) }, worker));
+  return articles.map((article) => result.find((translated) => translated.id === article.id) || article);
+}
+async function feed(user, topic) {
+  const selected = user ? preferences(user.id) : { topics: [], sources: [], language: 'ru' };
   const topics = topic && TOPICS.includes(topic) ? [topic] : selected.topics;
   const disabledSources = selected.sources.filter((row) => !row.enabled).map((row) => row.sourceId);
   let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE 1=1`;
   const params = [];
   if (topics.length) { query += ` AND articles.category IN (${topics.map(() => '?').join(',')})`; params.push(...topics); }
   if (disabledSources.length) { query += ` AND articles.source_id NOT IN (${disabledSources.map(() => '?').join(',')})`; params.push(...disabledSources); }
-  query += ' ORDER BY datetime(articles.published_at) DESC LIMIT 60';
-  return db.prepare(query).all(...params);
+  query += ' ORDER BY datetime(articles.published_at) DESC LIMIT 30';
+  const articles = db.prepare(query).all(...params);
+  return { articles: await translateArticles(articles, selected.language), language: selected.language };
 }
 async function api(request, response, url) {
   const user = userFromRequest(request);
   if (request.method === 'GET' && url.pathname === '/api/health') return json(response, 200, { ok: true });
   if (request.method === 'GET' && url.pathname === '/api/me') return json(response, 200, { user, preferences: user ? preferences(user.id) : null });
   if (request.method === 'GET' && url.pathname === '/api/sources') return json(response, 200, { sources: db.prepare('SELECT id, name, url, accent FROM sources WHERE enabled = 1 ORDER BY id').all() });
-  if (request.method === 'GET' && url.pathname === '/api/feed') return json(response, 200, { articles: feed(user, url.searchParams.get('topic')), personalized: Boolean(user) });
+  if (request.method === 'GET' && url.pathname === '/api/feed') {
+    const result = await feed(user, url.searchParams.get('topic'));
+    return json(response, 200, { ...result, personalized: Boolean(user) });
+  }
   if (request.method === 'POST' && url.pathname === '/api/refresh') {
     const result = await refreshFeeds();
     return json(response, 200, result);
@@ -178,9 +219,10 @@ async function api(request, response, url) {
   }
   if (request.method === 'PUT' && url.pathname === '/api/preferences') {
     if (!user) return json(response, 401, { error: 'Войдите, чтобы сохранить настройки.' });
-    const { topics = [], sources = [] } = await body(request);
+    const { topics = [], sources = [], language = 'ru' } = await body(request);
     const validTopics = [...new Set(topics)].filter((item) => TOPICS.includes(item));
     const validSources = sources.filter((item) => Number.isInteger(item.sourceId) && typeof item.enabled === 'boolean');
+    if (!['ru', 'en'].includes(language)) return badRequest(response, 'Поддерживаются только русский и английский языки.');
     db.exec('BEGIN');
     try {
       db.prepare('DELETE FROM user_topics WHERE user_id = ?').run(user.id);
@@ -188,6 +230,7 @@ async function api(request, response, url) {
       validTopics.forEach((item) => addTopic.run(user.id, item));
       const updateSource = db.prepare('INSERT INTO user_sources (user_id, source_id, enabled) VALUES (?, ?, ?) ON CONFLICT(user_id, source_id) DO UPDATE SET enabled = excluded.enabled');
       validSources.forEach((item) => updateSource.run(user.id, item.sourceId, Number(item.enabled)));
+      db.prepare('INSERT INTO user_settings (user_id, language) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET language = excluded.language').run(user.id, language);
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
     return json(response, 200, { preferences: preferences(user.id) });
