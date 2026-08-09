@@ -55,7 +55,7 @@ const SOURCE_SEED = [
 const insertSource = db.prepare('INSERT OR IGNORE INTO sources (name, url, feed_url, accent) VALUES (?, ?, ?, ?)');
 SOURCE_SEED.forEach((source) => insertSource.run(...source));
 const TOPICS = ['models', 'dev', 'research', 'tools', 'games', 'business', 'media'];
-const RICH_MARKUP_VERSION = 2;
+const RICH_MARKUP_VERSION = 3;
 let lastRefresh = 0;
 let refreshPromise = null;
 
@@ -286,9 +286,14 @@ function dtfRichPage(html, article) {
       for (const item of block.data.items.slice(0, 12)) {
         const image = item.image?.data;
         if (!image?.uuid) continue;
-        const src = `https://leonardo.osnova.io/${image.uuid}/-/format/webp/`;
+        const baseUrl = `https://leonardo.osnova.io/${image.uuid}/-/`;
+        const src = `${baseUrl}format/webp/`;
         const caption = clean(item.title || '');
-        markup.push(`<figure><img src="${src}" alt="" loading="lazy" referrerpolicy="no-referrer" />${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ''}</figure>`);
+        if (image.type === 'gif' && image.duration) {
+          markup.push(`<figure class="reader-native-video"><div class="reader-video"><video controls preload="metadata" playsinline poster="${src}" referrerpolicy="no-referrer"><source src="${baseUrl}format/mp4/#t=0.1" type="video/mp4" /></video></div>${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ''}</figure>`);
+        } else {
+          markup.push(`<figure><img src="${src}" alt="" loading="lazy" referrerpolicy="no-referrer" />${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ''}</figure>`);
+        }
       }
     }
     if (block.type === 'video') {
