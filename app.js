@@ -121,18 +121,18 @@ async function loadFeed() {
     }
   }
   if (loadVersion !== feedLoadVersion) return;
-  const canSortPersonal = personalized && !state.sourceId && state.topic === 'all';
+  const canSort = !state.sourceId && state.topic === 'all';
   const items = isHighlights ? articles : [...ownPosts, ...articles];
   const allItems = [...items].sort((left, right) => {
-    if (canSortPersonal && state.feedSort === 'views') return Number(right.viewCount || 0) - Number(left.viewCount || 0) || Number(right.commentCount || 0) - Number(left.commentCount || 0) || new Date(right.publishedAt) - new Date(left.publishedAt);
-    if (canSortPersonal && state.feedSort === 'comments') return Number(right.commentCount || 0) - Number(left.commentCount || 0) || Number(right.viewCount || 0) - Number(left.viewCount || 0) || new Date(right.publishedAt) - new Date(left.publishedAt);
+    if (canSort && state.feedSort === 'views') return Number(right.viewCount || 0) - Number(left.viewCount || 0) || Number(right.commentCount || 0) - Number(left.commentCount || 0) || new Date(right.publishedAt) - new Date(left.publishedAt);
+    if (canSort && state.feedSort === 'comments') return Number(right.commentCount || 0) - Number(left.commentCount || 0) || Number(right.viewCount || 0) - Number(left.viewCount || 0) || new Date(right.publishedAt) - new Date(left.publishedAt);
     return new Date(right.publishedAt) - new Date(left.publishedAt);
   });
   const periodNames = { day: 'день', week: 'неделю', month: 'месяц' };
   $('#feedHeading').textContent = isHighlights ? `Лучшие материалы${selectedSource ? ` · ${selectedSource.name}` : ''} за ${periodNames[state.bestPeriod]}` : (selectedSource ? `${selectedSource.name} — последние материалы` : (personalized ? 'Ваша персональная лента' : 'Свежие публикации'));
   $('#sourceFeedReset').hidden = !selectedSource;
   $('#bestPeriods').hidden = !isHighlights;
-  $('#personalSort').hidden = !canSortPersonal;
+  $('#personalSort').hidden = !canSort;
   document.querySelectorAll('[data-best-period]').forEach((button) => button.classList.toggle('active', button.dataset.bestPeriod === state.bestPeriod));
   document.querySelectorAll('[data-feed-sort]').forEach((button) => button.classList.toggle('active', button.dataset.feedSort === state.feedSort));
   $('#articleList').innerHTML = allItems.length ? allItems.map(articleMarkup).join('') : '<div class="empty-state"><strong>Пока нет публикаций по этим условиям.</strong><span>Попробуйте включить больше тем или обновить ленту.</span></div>';
