@@ -27,7 +27,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, summary TEXT, PRIMARY KEY (article_id, language));
   CREATE TABLE IF NOT EXISTS article_pages (article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE, original_title TEXT NOT NULL, original_content TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS article_page_translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY (article_id, language));
-  CREATE TABLE IF NOT EXISTS user_profiles (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, display_name TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS user_profiles (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, display_name TEXT NOT NULL, bio TEXT NOT NULL DEFAULT '');
   CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id INTEGER, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE INDEX IF NOT EXISTS comments_article_idx ON comments(article_id, created_at DESC);
   CREATE TABLE IF NOT EXISTS user_posts (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, blocks_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, published_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -37,6 +37,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS post_comments_post_idx ON post_comments(post_id, created_at DESC);
 `);
 if (!db.prepare("SELECT name FROM pragma_table_info('comments') WHERE name = 'parent_id'").get()) db.exec('ALTER TABLE comments ADD COLUMN parent_id INTEGER');
+if (!db.prepare("SELECT name FROM pragma_table_info('user_profiles') WHERE name = 'bio'").get()) db.exec("ALTER TABLE user_profiles ADD COLUMN bio TEXT NOT NULL DEFAULT ''");
 
 const SOURCE_SEED = [
   ['OpenAI', 'https://openai.com/news/', 'https://openai.com/news/rss.xml', '#cefa62'],
@@ -261,7 +262,7 @@ async function articlePage(user, articleId) {
   }
 }
 function commentsFor(articleId) {
-  const comments = db.prepare(`SELECT comments.id, comments.parent_id AS parentId, comments.body, comments.created_at AS createdAt,
+  const comments = db.prepare(`SELECT comments.id, comments.parent_id AS parentId, comments.body, comments.created_at AS createdAt, users.id AS authorId,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
     FROM comments JOIN users ON users.id = comments.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id
     WHERE comments.article_id = ? ORDER BY datetime(comments.created_at) ASC`).all(articleId).map((comment) => ({ ...comment, replies: [] }));
@@ -271,7 +272,7 @@ function commentsFor(articleId) {
   return roots;
 }
 function postCommentsFor(postId) {
-  const comments = db.prepare(`SELECT post_comments.id, post_comments.parent_id AS parentId, post_comments.body, post_comments.created_at AS createdAt,
+  const comments = db.prepare(`SELECT post_comments.id, post_comments.parent_id AS parentId, post_comments.body, post_comments.created_at AS createdAt, users.id AS authorId,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
     FROM post_comments JOIN users ON users.id = post_comments.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id
     WHERE post_comments.post_id = ? ORDER BY datetime(post_comments.created_at) ASC`).all(postId).map((comment) => ({ ...comment, replies: [] }));
@@ -306,7 +307,7 @@ function safeBlocks(rawBlocks) {
 }
 function postRow(post) { return { ...post, blocks: JSON.parse(post.blocksJson), kind: 'post' }; }
 function postsForFeed() {
-  return db.prepare(`SELECT user_posts.id, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt,
+  return db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
     FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id ORDER BY datetime(user_posts.published_at) DESC LIMIT 20`).all().map(postRow);
 }
@@ -319,12 +320,27 @@ function pollResults(postId, blocks, userId) {
   }, {});
 }
 function postById(postId, user) {
-  const post = db.prepare(`SELECT user_posts.id, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt,
+  const post = db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
     FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE user_posts.id = ?`).get(postId);
   if (!post) return null;
   const result = postRow(post);
   return { ...result, polls: pollResults(result.id, result.blocks, user?.id) };
+}
+function profileById(userId) {
+  const profile = db.prepare(`SELECT users.id, COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS displayName,
+    COALESCE(user_profiles.bio, '') AS bio, users.created_at AS createdAt
+    FROM users LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE users.id = ?`).get(userId);
+  if (!profile) return null;
+  const posts = db.prepare(`SELECT id, title, blocks_json AS blocksJson, published_at AS publishedAt FROM user_posts WHERE user_id = ? ORDER BY datetime(published_at) DESC`).all(userId).map(postRow);
+  const comments = db.prepare(`SELECT * FROM (
+    SELECT comments.id, comments.body, comments.created_at AS createdAt, articles.id AS targetId, articles.title AS targetTitle, 'article' AS targetKind
+    FROM comments JOIN articles ON articles.id = comments.article_id WHERE comments.user_id = ?
+    UNION ALL
+    SELECT post_comments.id, post_comments.body, post_comments.created_at AS createdAt, user_posts.id AS targetId, user_posts.title AS targetTitle, 'post' AS targetKind
+    FROM post_comments JOIN user_posts ON user_posts.id = post_comments.post_id WHERE post_comments.user_id = ?
+  ) ORDER BY datetime(createdAt) DESC LIMIT 100`).all(userId, userId);
+  return { profile, posts, comments };
 }
 async function feed(user, topic) {
   const selected = user ? preferences(user.id) : { topics: [], sources: [], language: 'ru' };
@@ -342,6 +358,21 @@ async function api(request, response, url) {
   const user = userFromRequest(request);
   if (request.method === 'GET' && url.pathname === '/api/health') return json(response, 200, { ok: true });
   if (request.method === 'GET' && url.pathname === '/api/me') return json(response, 200, { user, preferences: user ? preferences(user.id) : null });
+  if (request.method === 'PUT' && url.pathname === '/api/profile') {
+    if (!user) return json(response, 401, { error: 'Войдите, чтобы изменить профиль.' });
+    const { displayName = '', bio = '' } = await body(request);
+    const name = String(displayName).trim().replace(/\s+/g, ' ').slice(0, 60);
+    const about = String(bio).trim().replace(/\s+/g, ' ').slice(0, 600);
+    if (name.length < 2) return badRequest(response, 'Имя профиля должно содержать минимум 2 символа.');
+    db.prepare(`INSERT INTO user_profiles (user_id, display_name, bio) VALUES (?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET display_name = excluded.display_name, bio = excluded.bio`).run(user.id, name, about);
+    return json(response, 200, { user: { ...user, displayName: name }, profile: profileById(user.id)?.profile });
+  }
+  const profileMatch = url.pathname.match(/^\/api\/profiles\/(\d+)$/);
+  if (request.method === 'GET' && profileMatch) {
+    const result = profileById(Number(profileMatch[1]));
+    return result ? json(response, 200, result) : json(response, 404, { error: 'Профиль не найден.' });
+  }
   if (request.method === 'GET' && url.pathname === '/api/sources') return json(response, 200, { sources: db.prepare('SELECT id, name, url, accent FROM sources WHERE enabled = 1 ORDER BY id').all() });
   const uploadMatch = url.pathname.match(/^\/api\/uploads\/([a-z0-9-]+\.(?:png|jpg|webp))$/i);
   if (request.method === 'GET' && uploadMatch) {
@@ -477,7 +508,7 @@ async function api(request, response, url) {
   return json(response, 404, { error: 'Не найдено.' });
 }
 async function staticFile(request, response, path) {
-  const requested = path === '/' ? 'index.html' : path.slice(1);
+  const requested = path === '/' || path === '/write' || /^(\/article|\/post|\/profile)\/\d+$/.test(path) ? 'index.html' : path.slice(1);
   if (!['index.html', 'styles.css', 'reader.css', 'layout.css', 'community.css', 'replies.css', 'publisher.css', 'branding.css', 'favicon.svg', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
   try {
     const file = await readFile(join(staticDir, requested));
