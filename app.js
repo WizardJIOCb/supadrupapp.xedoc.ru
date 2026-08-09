@@ -93,7 +93,9 @@ function enhanceCodeBlocks() {
     toolbar.querySelector('[data-code-copy]').addEventListener('click', async (event) => { try { await navigator.clipboard.writeText(text); event.currentTarget.textContent = 'Скопировано'; setTimeout(() => { event.currentTarget.textContent = 'Копировать'; }, 1400); } catch { event.currentTarget.textContent = 'Не скопировано'; } });
   });
 }
+let feedLoadVersion = 0;
 async function loadFeed() {
+  const loadVersion = ++feedLoadVersion;
   const selectedSource = state.sources.find((source) => source.id === state.sourceId);
   const isHighlights = Boolean(state.bestPeriod);
   let articles = [];
@@ -118,6 +120,7 @@ async function loadFeed() {
       ownPosts = posts.map((post) => ({ ...post, summary: post.blocks.find((block) => block.type === 'paragraph' || block.type === 'quote')?.text || 'Авторская публикация сообщества.' }));
     }
   }
+  if (loadVersion !== feedLoadVersion) return;
   const canSortPersonal = personalized && !state.sourceId && state.topic === 'all';
   const items = isHighlights ? articles : [...ownPosts, ...articles];
   const allItems = [...items].sort((left, right) => {
