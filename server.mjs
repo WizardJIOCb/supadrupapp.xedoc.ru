@@ -71,7 +71,7 @@ const SOURCE_SEED = [
 const insertSource = db.prepare('INSERT OR IGNORE INTO sources (name, url, feed_url, accent) VALUES (?, ?, ?, ?)');
 SOURCE_SEED.forEach((source) => insertSource.run(...source));
 const TOPICS = ['models', 'dev', 'research', 'tools', 'games', 'business', 'media'];
-const RICH_MARKUP_VERSION = 9;
+const RICH_MARKUP_VERSION = 10;
 let lastRefresh = 0;
 let refreshPromise = null;
 
@@ -399,9 +399,9 @@ function genericRichPage(html, article) {
     ? elementInnerHtml(html, /<div\b[^>]*\bid=["']post-content-body["'][^>]*>/i)
     : elementInnerHtml(html, /<div\b[^>]*\bclass=["'][^"']*\bpost-content\b[^"']*["'][^>]*>/i) || elementInnerHtml(html, /<article\b[^>]*>/i);
   if (!fragment) return null;
-  const withoutHeader = fragment.replace(/<header\b[^>]*>[\s\S]*?<\/header>/gi, '');
-  const markup = safeRichMarkup(withoutHeader, article.url).replace(/(?:<br>\s*){3,}/g, '<br><br>').trim();
-  const content = extractPageContent(withoutHeader, true);
+  const withoutChrome = fragment.replace(/<(script|style|svg|nav|header|footer|aside|form|noscript|template)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ').replace(/\bREG\s+ADVERTISEMENT\b/gi, ' ');
+  const markup = safeRichMarkup(withoutChrome, article.url).replace(/(?:<br>\s*){3,}/g, '<br><br>').trim();
+  const content = extractPageContent(withoutChrome, true);
   return /<(p|h2|h3|h4|ul|ol|blockquote|pre|figure|a)\b/i.test(markup) && content.length >= 80 ? { title: pageTitleFromHtml(html, article.title), content, markup } : null;
 }
 function contentMarkupWithCode(content, originalMarkup) {
@@ -495,6 +495,7 @@ async function loadOriginalPage(article) {
     page = { title: article.title, content: article.summary || 'Источник временно не разрешил загрузку полного текста. Откройте оригинал по ссылке выше.', markup: '' };
   }
   if (page.content.length < 80) page.content = article.summary || 'Источник временно не разрешил загрузку полного текста. Откройте оригинал по ссылке выше.';
+  db.prepare('DELETE FROM article_page_translations WHERE article_id = ?').run(article.id);
   db.prepare('INSERT OR REPLACE INTO article_pages (article_id, original_title, original_content, original_markup, original_markup_version) VALUES (?, ?, ?, ?, ?)').run(article.id, page.title, page.content, page.markup || '', RICH_MARKUP_VERSION);
   return page;
 }
