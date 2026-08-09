@@ -6,4 +6,5 @@ body.dark .topic.active,body.dark .subscribe-button,body.dark dialog form>button
 .tag.games{background:#c9ef9e}.tag.business{background:#ffd29e}.tag.media{background:#bad8ff}.tag.games,.tag.business,.tag.media{color:#25231f}
 .article-metrics{display:flex;align-items:center;gap:9px;min-width:0}.article-metrics time{cursor:help}.article-metric{display:inline-flex;align-items:center;gap:3px;color:var(--muted);font:9px var(--mono);letter-spacing:0;text-transform:none}.article-metric svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .source-popularity{display:inline-flex;align-items:center;color:#7a5ee0;font:9px var(--mono);letter-spacing:0;text-transform:none;white-space:nowrap}
+.article-source-popularity{margin-top:9px;min-height:14px}.article-source-popularity .source-popularity{font-size:10px}
 .source.active{border-radius:6px;background:#8463ef12}.source.active strong{color:var(--violet)}.feed-reset{flex:none;border:0;background:transparent;color:var(--violet);padding:0;font-size:11px;font-weight:800;text-decoration:underline;text-underline-offset:3px}
