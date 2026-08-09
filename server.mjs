@@ -16,7 +16,7 @@ mkdirSync(uploadsDir, { recursive: true });
 const db = new DatabaseSync(join(dataDir, 'news.db'));
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 db.exec(`
-  CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, is_admin INTEGER NOT NULL DEFAULT 0, is_banned INTEGER NOT NULL DEFAULT 0);
+  CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, is_admin INTEGER NOT NULL DEFAULT 0, is_moderator INTEGER NOT NULL DEFAULT 0, is_banned INTEGER NOT NULL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS sources (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, feed_url TEXT NOT NULL UNIQUE, accent TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
   CREATE TABLE IF NOT EXISTS articles (id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES sources(id), external_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, url TEXT NOT NULL, summary TEXT, category TEXT NOT NULL, published_at TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, view_count INTEGER NOT NULL DEFAULT 0, source_popularity_label TEXT NOT NULL DEFAULT '', is_hidden INTEGER NOT NULL DEFAULT 0);
@@ -48,9 +48,14 @@ if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name 
 if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup_version'").get()) db.exec('ALTER TABLE article_pages ADD COLUMN original_markup_version INTEGER NOT NULL DEFAULT 1');
 if (!db.prepare("SELECT name FROM pragma_table_info('article_page_translations') WHERE name = 'markup'").get()) db.exec("ALTER TABLE article_page_translations ADD COLUMN markup TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("SELECT name FROM pragma_table_info('users') WHERE name = 'is_admin'").get()) db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0');
+if (!db.prepare("SELECT name FROM pragma_table_info('users') WHERE name = 'is_moderator'").get()) db.exec('ALTER TABLE users ADD COLUMN is_moderator INTEGER NOT NULL DEFAULT 0');
 if (!db.prepare("SELECT name FROM pragma_table_info('users') WHERE name = 'is_banned'").get()) db.exec('ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0');
 if (!db.prepare("SELECT name FROM pragma_table_info('articles') WHERE name = 'is_hidden'").get()) db.exec('ALTER TABLE articles ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0');
 if (!db.prepare("SELECT name FROM pragma_table_info('user_posts') WHERE name = 'is_hidden'").get()) db.exec('ALTER TABLE user_posts ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0');
+if (!db.prepare("SELECT name FROM pragma_table_info('comments') WHERE name = 'deleted_at'").get()) db.exec('ALTER TABLE comments ADD COLUMN deleted_at TEXT');
+if (!db.prepare("SELECT name FROM pragma_table_info('comments') WHERE name = 'deleted_by'").get()) db.exec('ALTER TABLE comments ADD COLUMN deleted_by INTEGER');
+if (!db.prepare("SELECT name FROM pragma_table_info('post_comments') WHERE name = 'deleted_at'").get()) db.exec('ALTER TABLE post_comments ADD COLUMN deleted_at TEXT');
+if (!db.prepare("SELECT name FROM pragma_table_info('post_comments') WHERE name = 'deleted_by'").get()) db.exec('ALTER TABLE post_comments ADD COLUMN deleted_by INTEGER');
 db.prepare('UPDATE users SET is_admin = 1 WHERE id = 2').run();
 
 const SOURCE_SEED = [
@@ -172,9 +177,9 @@ function userFromRequest(request) {
   const token = match?.[1];
   if (!token) return null;
   const hash = createHash('sha256').update(token).digest('hex');
-  const session = db.prepare('SELECT users.id, users.email, users.is_admin AS isAdmin, users.is_banned AS isBanned, user_profiles.display_name AS displayName, sessions.expires_at AS expiresAt FROM sessions JOIN users ON users.id = sessions.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE sessions.token_hash = ?').get(hash);
+  const session = db.prepare('SELECT users.id, users.email, users.is_admin AS isAdmin, users.is_moderator AS isModerator, users.is_banned AS isBanned, user_profiles.display_name AS displayName, sessions.expires_at AS expiresAt FROM sessions JOIN users ON users.id = sessions.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE sessions.token_hash = ?').get(hash);
   if (!session || session.isBanned || new Date(`${session.expiresAt.replace(' ', 'T')}Z`) <= new Date()) return null;
-  return { id: session.id, email: session.email, displayName: session.displayName || session.email.split('@')[0], isAdmin: Boolean(session.isAdmin) };
+  return { id: session.id, email: session.email, displayName: session.displayName || session.email.split('@')[0], isAdmin: Boolean(session.isAdmin), isModerator: Boolean(session.isModerator) };
 }
 function json(response, status, body, headers = {}) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
@@ -219,6 +224,7 @@ function requireAdmin(user, response) {
   json(response, 403, { error: 'Доступ только для администратора.' });
   return false;
 }
+function canModerate(user) { return Boolean(user?.isAdmin || user?.isModerator); }
 function isoDate(value, fallback) {
   const text = String(value || '');
   return /^\d{4}-\d{2}-\d{2}$/.test(text) && !Number.isNaN(new Date(`${text}T00:00:00Z`).getTime()) ? text : fallback;
@@ -256,11 +262,28 @@ function adminStats(fromParam, toParam) {
   };
 }
 function adminUsers() {
-  return db.prepare(`SELECT users.id, users.email, users.is_admin AS isAdmin, users.is_banned AS isBanned, users.created_at AS createdAt,
+  return db.prepare(`SELECT users.id, users.email, users.is_admin AS isAdmin, users.is_moderator AS isModerator, users.is_banned AS isBanned, users.created_at AS createdAt,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS displayName,
     (SELECT COUNT(*) FROM user_posts WHERE user_id = users.id) AS postCount,
     (SELECT COUNT(*) FROM comments WHERE user_id = users.id) + (SELECT COUNT(*) FROM post_comments WHERE user_id = users.id) AS commentCount
-    FROM users LEFT JOIN user_profiles ON user_profiles.user_id = users.id ORDER BY datetime(users.created_at) DESC LIMIT 300`).all().map((row) => ({ ...row, isAdmin: Boolean(row.isAdmin), isBanned: Boolean(row.isBanned) }));
+    FROM users LEFT JOIN user_profiles ON user_profiles.user_id = users.id ORDER BY datetime(users.created_at) DESC LIMIT 300`).all().map((row) => ({ ...row, isAdmin: Boolean(row.isAdmin), isModerator: Boolean(row.isModerator), isBanned: Boolean(row.isBanned) }));
+}
+function adminDeletedComments() {
+  return db.prepare(`SELECT * FROM (
+    SELECT 'article' AS kind, comments.id, comments.article_id AS contentId, articles.title AS contentTitle, comments.body, comments.created_at AS createdAt, comments.deleted_at AS deletedAt,
+      COALESCE(NULLIF(author_profile.display_name, ''), substr(author.email, 1, instr(author.email, '@') - 1)) AS author,
+      COALESCE(NULLIF(deleter_profile.display_name, ''), substr(deleter.email, 1, instr(deleter.email, '@') - 1)) AS deletedBy
+      FROM comments JOIN articles ON articles.id = comments.article_id JOIN users AS author ON author.id = comments.user_id
+      LEFT JOIN users AS deleter ON deleter.id = comments.deleted_by LEFT JOIN user_profiles AS author_profile ON author_profile.user_id = author.id LEFT JOIN user_profiles AS deleter_profile ON deleter_profile.user_id = deleter.id
+      WHERE comments.deleted_at IS NOT NULL
+    UNION ALL
+    SELECT 'post' AS kind, post_comments.id, post_comments.post_id AS contentId, user_posts.title AS contentTitle, post_comments.body, post_comments.created_at AS createdAt, post_comments.deleted_at AS deletedAt,
+      COALESCE(NULLIF(author_profile.display_name, ''), substr(author.email, 1, instr(author.email, '@') - 1)) AS author,
+      COALESCE(NULLIF(deleter_profile.display_name, ''), substr(deleter.email, 1, instr(deleter.email, '@') - 1)) AS deletedBy
+      FROM post_comments JOIN user_posts ON user_posts.id = post_comments.post_id JOIN users AS author ON author.id = post_comments.user_id
+      LEFT JOIN users AS deleter ON deleter.id = post_comments.deleted_by LEFT JOIN user_profiles AS author_profile ON author_profile.user_id = author.id LEFT JOIN user_profiles AS deleter_profile ON deleter_profile.user_id = deleter.id
+      WHERE post_comments.deleted_at IS NOT NULL
+  ) ORDER BY datetime(deletedAt) DESC LIMIT 300`).all();
 }
 function adminContent() {
   return db.prepare(`SELECT * FROM (
@@ -558,35 +581,32 @@ async function articlePage(user, articleId) {
     return { ...article, ...original, language: 'en', originalUrl: article.url };
   }
 }
-function commentsFor(articleId) {
-  const comments = db.prepare(`SELECT comments.id, comments.parent_id AS parentId, comments.body, comments.created_at AS createdAt, users.id AS authorId, COALESCE(user_profiles.avatar_url, '') AS avatarUrl,
+function commentsFor(articleId, includeDeleted = false) {
+  const comments = db.prepare(`SELECT comments.id, comments.parent_id AS parentId, comments.body, comments.created_at AS createdAt, comments.deleted_at AS deletedAt, comments.deleted_by AS deletedBy, comments.deleted_at IS NOT NULL AS isDeleted, users.id AS authorId, COALESCE(user_profiles.avatar_url, '') AS avatarUrl,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
     FROM comments JOIN users ON users.id = comments.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id
-    WHERE comments.article_id = ? ORDER BY datetime(comments.created_at) ASC`).all(articleId).map((comment) => ({ ...comment, replies: [] }));
+    WHERE comments.article_id = ? ${includeDeleted ? '' : 'AND comments.deleted_at IS NULL'} ORDER BY datetime(comments.created_at) ASC`).all(articleId).map((comment) => ({ ...comment, isDeleted: Boolean(comment.isDeleted), replies: [] }));
   const byId = new Map(comments.map((comment) => [comment.id, comment]));
   const roots = [];
   comments.forEach((comment) => { const parent = comment.parentId ? byId.get(comment.parentId) : null; (parent ? parent.replies : roots).push(comment); });
   return roots;
 }
-function postCommentsFor(postId) {
-  const comments = db.prepare(`SELECT post_comments.id, post_comments.parent_id AS parentId, post_comments.body, post_comments.created_at AS createdAt, users.id AS authorId, COALESCE(user_profiles.avatar_url, '') AS avatarUrl,
+function postCommentsFor(postId, includeDeleted = false) {
+  const comments = db.prepare(`SELECT post_comments.id, post_comments.parent_id AS parentId, post_comments.body, post_comments.created_at AS createdAt, post_comments.deleted_at AS deletedAt, post_comments.deleted_by AS deletedBy, post_comments.deleted_at IS NOT NULL AS isDeleted, users.id AS authorId, COALESCE(user_profiles.avatar_url, '') AS avatarUrl,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
     FROM post_comments JOIN users ON users.id = post_comments.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id
-    WHERE post_comments.post_id = ? ORDER BY datetime(post_comments.created_at) ASC`).all(postId).map((comment) => ({ ...comment, replies: [] }));
+    WHERE post_comments.post_id = ? ${includeDeleted ? '' : 'AND post_comments.deleted_at IS NULL'} ORDER BY datetime(post_comments.created_at) ASC`).all(postId).map((comment) => ({ ...comment, isDeleted: Boolean(comment.isDeleted), replies: [] }));
   const byId = new Map(comments.map((comment) => [comment.id, comment]));
   const roots = [];
   comments.forEach((comment) => { const parent = comment.parentId ? byId.get(comment.parentId) : null; (parent ? parent.replies : roots).push(comment); });
   return roots;
 }
-function deleteCommentThread(user, table, scopeColumn, scopeId, commentId) {
-  const target = db.prepare(`SELECT id, user_id AS userId FROM ${table} WHERE id = ? AND ${scopeColumn} = ?`).get(commentId, scopeId);
+function deleteComment(user, table, scopeColumn, scopeId, commentId) {
+  const target = db.prepare(`SELECT id, user_id AS userId, deleted_at AS deletedAt FROM ${table} WHERE id = ? AND ${scopeColumn} = ?`).get(commentId, scopeId);
   if (!target) return { error: 'Комментарий не найден.', status: 404 };
-  if (target.userId !== user.id && !user.isAdmin) return { error: 'Можно удалить только свой комментарий.', status: 403 };
-  db.prepare(`WITH RECURSIVE branch(id) AS (
-    SELECT id FROM ${table} WHERE id = ? AND ${scopeColumn} = ?
-    UNION ALL
-    SELECT child.id FROM ${table} AS child JOIN branch ON child.parent_id = branch.id WHERE child.${scopeColumn} = ?
-  ) DELETE FROM ${table} WHERE id IN (SELECT id FROM branch)`).run(commentId, scopeId, scopeId);
+  if (target.deletedAt) return { error: 'Комментарий уже удалён.', status: 409 };
+  if (target.userId !== user.id && !canModerate(user)) return { error: 'Можно удалить только свой комментарий.', status: 403 };
+  db.prepare(`UPDATE ${table} SET deleted_at = CURRENT_TIMESTAMP, deleted_by = ? WHERE id = ? AND ${scopeColumn} = ?`).run(user.id, commentId, scopeId);
   return { ok: true };
 }
 function safeBlocks(rawBlocks) {
@@ -739,17 +759,29 @@ async function api(request, response, url) {
     }
     if (request.method === 'GET' && url.pathname === '/api/admin/users') return json(response, 200, { users: adminUsers() });
     if (request.method === 'GET' && url.pathname === '/api/admin/content') return json(response, 200, { content: adminContent() });
+    if (request.method === 'GET' && url.pathname === '/api/admin/comments') return json(response, 200, { comments: adminDeletedComments() });
     const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/(\d+)$/);
     if (request.method === 'PUT' && adminUserMatch) {
       const userId = Number(adminUserMatch[1]);
-      const target = db.prepare('SELECT id, is_admin AS isAdmin, is_banned AS isBanned FROM users WHERE id = ?').get(userId);
+      const target = db.prepare('SELECT id, is_admin AS isAdmin, is_moderator AS isModerator, is_banned AS isBanned FROM users WHERE id = ?').get(userId);
       if (!target) return json(response, 404, { error: 'Пользователь не найден.' });
       const changes = await body(request);
       const isAdmin = typeof changes.isAdmin === 'boolean' ? changes.isAdmin : Boolean(target.isAdmin);
+      const isModerator = typeof changes.isModerator === 'boolean' ? changes.isModerator : Boolean(target.isModerator);
       const isBanned = typeof changes.isBanned === 'boolean' ? changes.isBanned : Boolean(target.isBanned);
       if (userId === user.id && !isAdmin) return badRequest(response, 'Нельзя снять с себя права администратора.');
-      db.prepare('UPDATE users SET is_admin = ?, is_banned = ? WHERE id = ?').run(Number(isAdmin), Number(isBanned), userId);
+      db.prepare('UPDATE users SET is_admin = ?, is_moderator = ?, is_banned = ? WHERE id = ?').run(Number(isAdmin), Number(isModerator), Number(isBanned), userId);
       return json(response, 200, { users: adminUsers() });
+    }
+    const adminCommentMatch = url.pathname.match(/^\/api\/admin\/comments\/(articles|posts)\/(\d+)$/);
+    if (request.method === 'PUT' && adminCommentMatch) {
+      const { deleted } = await body(request);
+      if (typeof deleted !== 'boolean') return badRequest(response, 'Передайте статус комментария.');
+      const table = adminCommentMatch[1] === 'articles' ? 'comments' : 'post_comments';
+      const result = deleted
+        ? db.prepare(`UPDATE ${table} SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP), deleted_by = COALESCE(deleted_by, ?) WHERE id = ?`).run(user.id, Number(adminCommentMatch[2]))
+        : db.prepare(`UPDATE ${table} SET deleted_at = NULL, deleted_by = NULL WHERE id = ?`).run(Number(adminCommentMatch[2]));
+      return result.changes ? json(response, 200, { ok: true }) : json(response, 404, { error: 'Комментарий не найден.' });
     }
     const adminContentMatch = url.pathname.match(/^\/api\/admin\/content\/(articles|posts)\/(\d+)$/);
     if (request.method === 'PUT' && adminContentMatch) {
@@ -838,7 +870,7 @@ async function api(request, response, url) {
   }
   if (request.method === 'GET' && url.pathname === '/api/highlights') return json(response, 200, await highlights(user, url.searchParams.get('period'), url.searchParams.get('source')));
   const commentsMatch = url.pathname.match(/^\/api\/articles\/(\d+)\/comments$/);
-  if (request.method === 'GET' && commentsMatch) return json(response, 200, { comments: commentsFor(Number(commentsMatch[1])) });
+  if (request.method === 'GET' && commentsMatch) return json(response, 200, { comments: commentsFor(Number(commentsMatch[1]), canModerate(user)) });
   if (request.method === 'POST' && commentsMatch) {
     if (!user) return json(response, 401, { error: 'Войдите, чтобы оставить комментарий.' });
     const { body: commentBody = '', parentId = null } = await body(request);
@@ -849,16 +881,16 @@ async function api(request, response, url) {
     const parent = parentId === null || parentId === undefined || parentId === '' ? null : Number(parentId);
     if (parent !== null && (!Number.isInteger(parent) || !db.prepare('SELECT id FROM comments WHERE id = ? AND article_id = ?').get(parent, Number(commentsMatch[1])))) return badRequest(response, 'Комментарий, на который вы отвечаете, не найден.');
     db.prepare('INSERT INTO comments (article_id, user_id, parent_id, body) VALUES (?, ?, ?, ?)').run(Number(commentsMatch[1]), user.id, parent, text);
-    return json(response, 201, { comments: commentsFor(Number(commentsMatch[1])) });
+    return json(response, 201, { comments: commentsFor(Number(commentsMatch[1]), canModerate(user)) });
   }
   const articleCommentDeleteMatch = url.pathname.match(/^\/api\/articles\/(\d+)\/comments\/(\d+)$/);
   if (request.method === 'DELETE' && articleCommentDeleteMatch) {
     if (!user) return json(response, 401, { error: 'Войдите, чтобы удалить комментарий.' });
-    const result = deleteCommentThread(user, 'comments', 'article_id', Number(articleCommentDeleteMatch[1]), Number(articleCommentDeleteMatch[2]));
-    return result.ok ? json(response, 200, { comments: commentsFor(Number(articleCommentDeleteMatch[1])) }) : json(response, result.status, { error: result.error });
+    const result = deleteComment(user, 'comments', 'article_id', Number(articleCommentDeleteMatch[1]), Number(articleCommentDeleteMatch[2]));
+    return result.ok ? json(response, 200, { comments: commentsFor(Number(articleCommentDeleteMatch[1]), canModerate(user)) }) : json(response, result.status, { error: result.error });
   }
   const postCommentsMatch = url.pathname.match(/^\/api\/posts\/(\d+)\/comments$/);
-  if (request.method === 'GET' && postCommentsMatch) return json(response, 200, { comments: postCommentsFor(Number(postCommentsMatch[1])) });
+  if (request.method === 'GET' && postCommentsMatch) return json(response, 200, { comments: postCommentsFor(Number(postCommentsMatch[1]), canModerate(user)) });
   if (request.method === 'POST' && postCommentsMatch) {
     if (!user) return json(response, 401, { error: 'Войдите, чтобы оставить комментарий.' });
     const { body: commentBody = '', parentId = null } = await body(request);
@@ -869,13 +901,13 @@ async function api(request, response, url) {
     const parent = parentId === null || parentId === undefined || parentId === '' ? null : Number(parentId);
     if (parent !== null && (!Number.isInteger(parent) || !db.prepare('SELECT id FROM post_comments WHERE id = ? AND post_id = ?').get(parent, postId))) return badRequest(response, 'Комментарий, на который вы отвечаете, не найден.');
     db.prepare('INSERT INTO post_comments (post_id, user_id, parent_id, body) VALUES (?, ?, ?, ?)').run(postId, user.id, parent, text);
-    return json(response, 201, { comments: postCommentsFor(postId) });
+    return json(response, 201, { comments: postCommentsFor(postId, canModerate(user)) });
   }
   const postCommentDeleteMatch = url.pathname.match(/^\/api\/posts\/(\d+)\/comments\/(\d+)$/);
   if (request.method === 'DELETE' && postCommentDeleteMatch) {
     if (!user) return json(response, 401, { error: 'Войдите, чтобы удалить комментарий.' });
-    const result = deleteCommentThread(user, 'post_comments', 'post_id', Number(postCommentDeleteMatch[1]), Number(postCommentDeleteMatch[2]));
-    return result.ok ? json(response, 200, { comments: postCommentsFor(Number(postCommentDeleteMatch[1])) }) : json(response, result.status, { error: result.error });
+    const result = deleteComment(user, 'post_comments', 'post_id', Number(postCommentDeleteMatch[1]), Number(postCommentDeleteMatch[2]));
+    return result.ok ? json(response, 200, { comments: postCommentsFor(Number(postCommentDeleteMatch[1]), canModerate(user)) }) : json(response, result.status, { error: result.error });
   }
   const articleMatch = url.pathname.match(/^\/api\/articles\/(\d+)$/);
   if (request.method === 'GET' && articleMatch) {
@@ -897,16 +929,16 @@ async function api(request, response, url) {
     if (password.length < 8) return badRequest(response, 'Пароль должен содержать не менее 8 символов.');
     try {
       const result = db.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)').run(normalized, await hashPassword(password));
-      const user = { id: Number(result.lastInsertRowid), email: normalized, displayName: name, isAdmin: false };
+      const user = { id: Number(result.lastInsertRowid), email: normalized, displayName: name, isAdmin: false, isModerator: false };
       db.prepare('INSERT INTO user_profiles (user_id, display_name) VALUES (?, ?)').run(user.id, name);
       return createUserSession(response, user);
     } catch { return badRequest(response, 'Пользователь с таким email уже существует.'); }
   }
   if (request.method === 'POST' && url.pathname === '/api/auth/login') {
     const { email = '', password = '' } = await body(request);
-    const userRecord = db.prepare('SELECT users.id, users.email, users.password_hash, users.is_admin AS isAdmin, user_profiles.display_name AS displayName FROM users LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE users.email = ?').get(email.trim().toLowerCase());
+    const userRecord = db.prepare('SELECT users.id, users.email, users.password_hash, users.is_admin AS isAdmin, users.is_moderator AS isModerator, user_profiles.display_name AS displayName FROM users LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE users.email = ?').get(email.trim().toLowerCase());
     if (!userRecord || !(await passwordMatches(password, userRecord.password_hash))) return json(response, 401, { error: 'Неверный email или пароль.' });
-    return createUserSession(response, { id: userRecord.id, email: userRecord.email, displayName: userRecord.displayName || userRecord.email.split('@')[0], isAdmin: Boolean(userRecord.isAdmin) });
+    return createUserSession(response, { id: userRecord.id, email: userRecord.email, displayName: userRecord.displayName || userRecord.email.split('@')[0], isAdmin: Boolean(userRecord.isAdmin), isModerator: Boolean(userRecord.isModerator) });
   }
   if (request.method === 'POST' && url.pathname === '/api/auth/logout') {
     const token = (request.headers.cookie || '').match(/(?:^|;\s*)signal_session=([^;]+)/)?.[1];
