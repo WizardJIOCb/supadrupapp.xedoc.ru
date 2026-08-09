@@ -19,7 +19,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS sources (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, feed_url TEXT NOT NULL UNIQUE, accent TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
-  CREATE TABLE IF NOT EXISTS articles (id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES sources(id), external_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, url TEXT NOT NULL, summary TEXT, category TEXT NOT NULL, published_at TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, view_count INTEGER NOT NULL DEFAULT 0);
+  CREATE TABLE IF NOT EXISTS articles (id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES sources(id), external_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, url TEXT NOT NULL, summary TEXT, category TEXT NOT NULL, published_at TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, view_count INTEGER NOT NULL DEFAULT 0, source_popularity_label TEXT NOT NULL DEFAULT '');
   CREATE INDEX IF NOT EXISTS articles_published_idx ON articles(published_at DESC);
   CREATE TABLE IF NOT EXISTS user_topics (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, topic TEXT NOT NULL, PRIMARY KEY (user_id, topic));
   CREATE TABLE IF NOT EXISTS user_sources (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (user_id, source_id));
@@ -40,6 +40,7 @@ if (!db.prepare("SELECT name FROM pragma_table_info('comments') WHERE name = 'pa
 if (!db.prepare("SELECT name FROM pragma_table_info('user_profiles') WHERE name = 'bio'").get()) db.exec("ALTER TABLE user_profiles ADD COLUMN bio TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("SELECT name FROM pragma_table_info('user_profiles') WHERE name = 'avatar_url'").get()) db.exec("ALTER TABLE user_profiles ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("SELECT name FROM pragma_table_info('articles') WHERE name = 'view_count'").get()) db.exec('ALTER TABLE articles ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0');
+if (!db.prepare("SELECT name FROM pragma_table_info('articles') WHERE name = 'source_popularity_label'").get()) db.exec("ALTER TABLE articles ADD COLUMN source_popularity_label TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("SELECT name FROM pragma_table_info('user_posts') WHERE name = 'view_count'").get()) db.exec('ALTER TABLE user_posts ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0');
 if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup'").get()) db.exec("ALTER TABLE article_pages ADD COLUMN original_markup TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup_version'").get()) db.exec('ALTER TABLE article_pages ADD COLUMN original_markup_version INTEGER NOT NULL DEFAULT 1');
@@ -51,6 +52,7 @@ const SOURCE_SEED = [
   ['Cloudflare', 'https://blog.cloudflare.com/', 'https://blog.cloudflare.com/rss/', '#ffaf79'],
   ['vc.ru', 'https://vc.ru/', 'https://vc.ru/rss', '#ff7692'],
   ['DTF', 'https://dtf.ru/', 'https://dtf.ru/rss/all', '#78c9f0'],
+  ['Habr', 'https://habr.com/ru/', 'https://habr.com/ru/rss/articles/top/daily/?fl=ru', '#5ac9e8'],
 ];
 const insertSource = db.prepare('INSERT OR IGNORE INTO sources (name, url, feed_url, accent) VALUES (?, ?, ?, ?)');
 SOURCE_SEED.forEach((source) => insertSource.run(...source));
@@ -99,7 +101,7 @@ function reclassifyArticles() {
 reclassifyArticles();
 function parseFeed(xml, source) {
   const blocks = xml.match(/<item(?:\s[^>]*)?>[\s\S]*?<\/item>/gi) || xml.match(/<entry(?:\s[^>]*)?>[\s\S]*?<\/entry>/gi) || [];
-  return blocks.slice(0, 50).map((block) => {
+  return blocks.slice(0, 50).map((block, index) => {
     const title = tag(block, 'title');
     const url = linkFrom(block);
     const summary = tag(block, 'description') || tag(block, 'summary') || tag(block, 'content');
@@ -107,7 +109,8 @@ function parseFeed(xml, source) {
     const rawDate = tag(block, 'pubDate') || tag(block, 'published') || tag(block, 'updated');
     const date = new Date(rawDate);
     if (!title || !url || !externalId) return null;
-    return { externalId: `${source.id}:${externalId}`, title: title.slice(0, 500), url, summary: summary.slice(0, 900), category: categoryFor(source.name, title, summary), publishedAt: Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString() };
+    const sourcePopularityLabel = source.name === 'Habr' ? `Топ Habr · #${index + 1}` : '';
+    return { externalId: `${source.id}:${externalId}`, title: title.slice(0, 500), url, summary: summary.slice(0, 900), category: categoryFor(source.name, title, summary), publishedAt: Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString(), sourcePopularityLabel };
   }).filter(Boolean);
 }
 async function refreshFeeds(force = false) {
@@ -115,14 +118,15 @@ async function refreshFeeds(force = false) {
   if (!force && Date.now() - lastRefresh < 10 * 60 * 1000) return { updated: 0, cached: true };
   refreshPromise = (async () => {
     const sources = db.prepare('SELECT * FROM sources WHERE enabled = 1').all();
-    const addArticle = db.prepare('INSERT OR IGNORE INTO articles (source_id, external_id, title, url, summary, category, published_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    const addArticle = db.prepare(`INSERT INTO articles (source_id, external_id, title, url, summary, category, published_at, source_popularity_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(external_id) DO UPDATE SET source_popularity_label = excluded.source_popularity_label`);
     let updated = 0;
     await Promise.all(sources.map(async (source) => {
       try {
         const response = await fetch(source.feed_url, { headers: { 'User-Agent': 'supa-news/1.0 (+https://supadrupapp.xedoc.ru)' }, signal: AbortSignal.timeout(15000) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const articles = parseFeed(await response.text(), source);
-        for (const article of articles) updated += addArticle.run(source.id, article.externalId, article.title, article.url, article.summary, article.category, article.publishedAt).changes;
+        for (const article of articles) updated += addArticle.run(source.id, article.externalId, article.title, article.url, article.summary, article.category, article.publishedAt, article.sourcePopularityLabel).changes;
       } catch (error) { console.error(`Could not refresh ${source.name}: ${error.message}`); }
     }));
     lastRefresh = Date.now();
@@ -465,7 +469,7 @@ async function feed(user, topic) {
   const selected = user ? preferences(user.id) : { topics: [], sources: [], language: 'ru' };
   const topics = topic && TOPICS.includes(topic) ? [topic] : selected.topics;
   const disabledSources = selected.sources.filter((row) => !row.enabled).map((row) => row.sourceId);
-  let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount,
+  let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, articles.source_popularity_label AS sourcePopularityLabel,
     (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id) AS commentCount,
     sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE 1=1`;
   const params = [];
