@@ -59,6 +59,10 @@ function preciseDate(value) {
 function metricCount(value) {
   return new Intl.NumberFormat('ru-RU', { notation: 'compact', maximumFractionDigits: 1 }).format(Math.max(0, Number(value) || 0));
 }
+function readerViewsMarkup(value) {
+  const views = metricCount(value);
+  return `<span class="reader-views" title="Просмотров на supa"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>${views}</span>`;
+}
 function articleMarkup(article) {
   const ownPost = article.kind === 'post';
   const date = preciseDate(article.publishedAt);
@@ -225,7 +229,7 @@ async function renderArticlePage(articleId) {
   const content = article.markup || paragraphs;
   let replyTo = null;
   const composer = state.user ? `<form class="comment-form" id="commentForm"><div class="comment-reply-target" id="commentReplyTarget" hidden><span id="commentReplyLabel"></span><button type="button" id="cancelReply">×</button></div><textarea name="body" maxlength="1500" required minlength="2" placeholder="Поделитесь мыслью о материале…"></textarea><div><span>От имени ${escapeHtml(state.user.displayName || state.user.email.split('@')[0])}</span><button>Отправить</button></div></form>` : `<div class="comment-login"><span>Хотите обсудить статью?</span><button id="commentLogin">Войти или создать аккаунт</button></div>`;
-  $('main').innerHTML = `<article class="reader"><a class="reader-back" href="/">← Вернуться к ленте</a><div class="reader-meta"><span class="tag ${article.category}">${labels[article.category] || 'News'}</span><span>${escapeHtml(article.sourceName)}</span><span>${relativeDate(article.publishedAt)}</span></div><h1>${escapeHtml(article.title)}</h1><div class="reader-source">Сохранённая копия · язык: ${article.language === 'ru' ? 'русский' : 'English'} <a href="${escapeHtml(article.originalUrl)}" target="_blank" rel="noopener">Оригинал ↗</a></div><div class="reader-content${article.markup ? ' rich-reader-content' : ''}">${content}</div><section class="comments"><div class="comments-heading"><span>Обсуждение</span><small>Комментарии читателей</small></div>${composer}<div id="commentsList" class="comments-list"><p class="comments-empty">Пока нет комментариев. Начните обсуждение.</p></div></section></article>`;
+  $('main').innerHTML = `<article class="reader"><a class="reader-back" href="/">← Вернуться к ленте</a><div class="reader-meta"><span class="tag ${article.category}">${labels[article.category] || 'News'}</span><span>${escapeHtml(article.sourceName)}</span><span>${relativeDate(article.publishedAt)}</span>${readerViewsMarkup(article.viewCount)}</div><h1>${escapeHtml(article.title)}</h1><div class="reader-source">Сохранённая копия · язык: ${article.language === 'ru' ? 'русский' : 'English'} <a href="${escapeHtml(article.originalUrl)}" target="_blank" rel="noopener">Оригинал ↗</a></div><div class="reader-content${article.markup ? ' rich-reader-content' : ''}">${content}</div><section class="comments"><div class="comments-heading"><span>Обсуждение</span><small>Комментарии читателей</small></div>${composer}<div id="commentsList" class="comments-list"><p class="comments-empty">Пока нет комментариев. Начните обсуждение.</p></div></section></article>`;
   $('#commentLogin')?.addEventListener('click', () => openAuth(true));
   const clearReply = () => { replyTo = null; $('#commentReplyTarget').hidden = true; };
   $('#cancelReply')?.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); clearReply(); });
@@ -254,7 +258,7 @@ function postBlockMarkup(block, post) {
 async function renderPostPage(postId) {
   const { post } = await request(`/api/posts/${postId}`);
   trackContentReading('post', post);
-  $('main').innerHTML = `<article class="reader user-post"><a class="reader-back" href="/">← Вернуться к ленте</a><div class="reader-meta"><span class="tag tools">Авторская статья</span><a class="profile-link" href="/profile/${post.authorId}">${escapeHtml(post.author)}</a><span>${relativeDate(post.publishedAt)}</span></div><h1>${escapeHtml(post.title)}</h1><div class="reader-content post-content" id="postBlocks">${post.blocks.map((block) => postBlockMarkup(block, post)).join('')}</div>${commentsSection()}</article>`;
+  $('main').innerHTML = `<article class="reader user-post"><a class="reader-back" href="/">← Вернуться к ленте</a><div class="reader-meta"><span class="tag tools">Авторская статья</span><a class="profile-link" href="/profile/${post.authorId}">${escapeHtml(post.author)}</a><span>${relativeDate(post.publishedAt)}</span>${readerViewsMarkup(post.viewCount)}</div><h1>${escapeHtml(post.title)}</h1><div class="reader-content post-content" id="postBlocks">${post.blocks.map((block) => postBlockMarkup(block, post)).join('')}</div>${commentsSection()}</article>`;
   enhanceCodeBlocks();
   $('#postBlocks').addEventListener('click', async (event) => { const option = event.target.closest('.poll-option'); if (!option) return; if (!state.user) return openAuth(true); const pollId = option.closest('.post-poll').dataset.pollId; try { await request(`/api/posts/${post.id}/polls/${pollId}/vote`, { method: 'POST', body: JSON.stringify({ optionIndex: Number(option.dataset.optionIndex) }) }); await renderPostPage(post.id); } catch (error) { alert(error.message); } });
   bindComments('posts', post.id);
