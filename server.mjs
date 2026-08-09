@@ -588,13 +588,18 @@ async function feed(user, topic, sourceId) {
   const articles = db.prepare(query).all(...params);
   return { articles: await translateArticles(articles, selected.language), language: selected.language };
 }
-async function highlights(user, period) {
+async function highlights(user, period, sourceId) {
   const days = { day: 1, week: 7, month: 31 }[period] || 1;
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   const language = user ? preferences(user.id).language : 'ru';
-  const rows = db.prepare(`SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, articles.source_popularity_label AS sourcePopularityLabel,
+  const selectedSourceId = Number(sourceId) || null;
+  let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, articles.source_popularity_label AS sourcePopularityLabel,
     (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id) AS commentCount,
-    sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE sources.enabled = 1 ORDER BY datetime(articles.published_at) DESC LIMIT 400`).all()
+    sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE sources.enabled = 1`;
+  const params = [];
+  if (selectedSourceId) { query += ' AND articles.source_id = ?'; params.push(selectedSourceId); }
+  query += ' ORDER BY datetime(articles.published_at) DESC LIMIT 400';
+  const rows = db.prepare(query).all(...params)
     .filter((article) => new Date(article.publishedAt).getTime() >= cutoff)
     .map((article) => {
       const popularity = String(article.sourcePopularityLabel || '');
@@ -610,12 +615,12 @@ async function highlights(user, period) {
   const perSource = new Map();
   const articles = [];
   for (const article of rows) {
-    if ((perSource.get(article.sourceId) || 0) >= 3) continue;
+    if (!selectedSourceId && (perSource.get(article.sourceId) || 0) >= 3) continue;
     perSource.set(article.sourceId, (perSource.get(article.sourceId) || 0) + 1);
     articles.push(article);
     if (articles.length === 18) break;
   }
-  return { articles: await translateArticles(articles, language), language, period: days === 1 ? 'day' : days === 7 ? 'week' : 'month' };
+  return { articles: await translateArticles(articles, language), language, sourceId: selectedSourceId, period: days === 1 ? 'day' : days === 7 ? 'week' : 'month' };
 }
 async function api(request, response, url) {
   const user = userFromRequest(request);
@@ -694,7 +699,7 @@ async function api(request, response, url) {
     const result = await feed(user, url.searchParams.get('topic'), url.searchParams.get('source'));
     return json(response, 200, { ...result, personalized: Boolean(user) });
   }
-  if (request.method === 'GET' && url.pathname === '/api/highlights') return json(response, 200, await highlights(user, url.searchParams.get('period')));
+  if (request.method === 'GET' && url.pathname === '/api/highlights') return json(response, 200, await highlights(user, url.searchParams.get('period'), url.searchParams.get('source')));
   const commentsMatch = url.pathname.match(/^\/api\/articles\/(\d+)\/comments$/);
   if (request.method === 'GET' && commentsMatch) return json(response, 200, { comments: commentsFor(Number(commentsMatch[1])) });
   if (request.method === 'POST' && commentsMatch) {
