@@ -83,6 +83,8 @@ $('#themeToggle').addEventListener('click', () => document.body.classList.toggle
 $('#sidebarTheme').addEventListener('click', () => document.body.classList.toggle('dark'));
 $('#sidebarFresh').addEventListener('click', () => selectTopic('all'));
 $('#sidebarPersonal').addEventListener('click', openSettings);
+$('#sidebarProfile').addEventListener('click', () => state.user ? location.href = `/profile/${state.user.id}` : openAuth(true));
+$('#sidebarSettings').addEventListener('click', () => state.user ? openSettings() : openAuth(true));
 $('#writeButton').addEventListener('click', () => { location.href = '/write'; });
 $('#profileButton').addEventListener('click', () => { if (state.user) location.href = `/profile/${state.user.id}`; });
 $('#accountButton').addEventListener('click', () => state.user ? openSettings() : openAuth(true));
