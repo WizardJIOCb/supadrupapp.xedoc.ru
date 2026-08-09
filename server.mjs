@@ -188,13 +188,19 @@ function pageTitleFromHtml(html, fallback) {
 async function loadOriginalPage(article) {
   const cached = db.prepare('SELECT original_title AS title, original_content AS content FROM article_pages WHERE article_id = ?').get(article.id);
   if (cached?.content.length >= 200) return cached;
-  const destination = new URL(article.url);
-  if (destination.protocol !== 'https:') throw new Error('Статья доступна только по HTTPS.');
-  const response = await fetch(destination, { headers: { 'User-Agent': 'signal-ai-news/1.0 (+https://supadrupapp.xedoc.ru)' }, signal: AbortSignal.timeout(20000) });
-  if (!response.ok) throw new Error(`Источник вернул HTTP ${response.status}`);
-  const html = await response.text();
-  const page = { title: pageTitleFromHtml(html, article.title), content: extractPageContent(html) };
-  if (page.content.length < 80) page.content = article.summary || 'Текст статьи недоступен у источника.';
+  let page;
+  try {
+    const destination = new URL(article.url);
+    if (destination.protocol !== 'https:') throw new Error('Статья доступна только по HTTPS.');
+    const response = await fetch(destination, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36', 'Accept-Language': 'en-US,en;q=0.9' }, signal: AbortSignal.timeout(20000) });
+    if (!response.ok) throw new Error(`Источник вернул HTTP ${response.status}`);
+    const html = await response.text();
+    page = { title: pageTitleFromHtml(html, article.title), content: extractPageContent(html) };
+  } catch (error) {
+    console.error(`Could not copy article ${article.id}: ${error.message}`);
+    page = { title: article.title, content: article.summary || 'Источник временно не разрешил загрузку полного текста. Откройте оригинал по ссылке выше.' };
+  }
+  if (page.content.length < 80) page.content = article.summary || 'Источник временно не разрешил загрузку полного текста. Откройте оригинал по ссылке выше.';
   db.prepare('INSERT OR REPLACE INTO article_pages (article_id, original_title, original_content) VALUES (?, ?, ?)').run(article.id, page.title, page.content);
   return page;
 }
