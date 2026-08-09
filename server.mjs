@@ -95,7 +95,7 @@ async function refreshFeeds(force = false) {
     let updated = 0;
     await Promise.all(sources.map(async (source) => {
       try {
-        const response = await fetch(source.feed_url, { headers: { 'User-Agent': 'signal-ai-news/1.0 (+https://supadrupapp.xedoc.ru)' }, signal: AbortSignal.timeout(15000) });
+        const response = await fetch(source.feed_url, { headers: { 'User-Agent': 'supa-news/1.0 (+https://supadrupapp.xedoc.ru)' }, signal: AbortSignal.timeout(15000) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const articles = parseFeed(await response.text(), source);
         for (const article of articles) updated += addArticle.run(source.id, article.externalId, article.title, article.url, article.summary, article.category, article.publishedAt).changes;
@@ -528,7 +528,7 @@ const server = createServer(async (request, response) => {
   } catch (error) { console.error(error); return json(response, 500, { error: 'Внутренняя ошибка сервера.' }); }
 });
 server.listen(port, '127.0.0.1', () => {
-  console.log(`signal/ai listening on http://127.0.0.1:${port}`);
+  console.log(`supa listening on http://127.0.0.1:${port}`);
   refreshFeeds().then((result) => console.log(`Initial refresh: ${result.updated} new articles`));
 });
 setInterval(() => refreshFeeds(), 15 * 60 * 1000).unref();

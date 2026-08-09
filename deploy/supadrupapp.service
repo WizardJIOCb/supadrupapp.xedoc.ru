@@ -1,5 +1,5 @@
 [Unit]
-Description=signal/ai personal news service
+Description=supa personal news service
 After=network-online.target
 Wants=network-online.target
 
