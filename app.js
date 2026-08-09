@@ -99,6 +99,7 @@ async function loadFeed() {
     const query = new URLSearchParams({ period: state.bestPeriod });
     if (state.sourceId) query.set('source', state.sourceId);
     ({ articles } = await request(`/api/highlights?${query}`));
+    personalized = Boolean(state.user);
   } else {
     const query = new URLSearchParams();
     if (state.sourceId) query.set('source', state.sourceId);
@@ -111,8 +112,9 @@ async function loadFeed() {
       ownPosts = posts.map((post) => ({ ...post, summary: post.blocks.find((block) => block.type === 'paragraph' || block.type === 'quote')?.text || 'Авторская публикация сообщества.' }));
     }
   }
-  const canSortPersonal = personalized && !isHighlights && !state.sourceId && state.topic === 'all';
-  const allItems = isHighlights ? articles : [...ownPosts, ...articles].sort((left, right) => {
+  const canSortPersonal = personalized && !state.sourceId && state.topic === 'all';
+  const items = isHighlights ? articles : [...ownPosts, ...articles];
+  const allItems = [...items].sort((left, right) => {
     if (canSortPersonal && state.feedSort === 'views') return Number(right.viewCount || 0) - Number(left.viewCount || 0) || Number(right.commentCount || 0) - Number(left.commentCount || 0) || new Date(right.publishedAt) - new Date(left.publishedAt);
     if (canSortPersonal && state.feedSort === 'comments') return Number(right.commentCount || 0) - Number(left.commentCount || 0) || Number(right.viewCount || 0) - Number(left.viewCount || 0) || new Date(right.publishedAt) - new Date(left.publishedAt);
     return new Date(right.publishedAt) - new Date(left.publishedAt);
@@ -168,8 +170,8 @@ async function logout() { await request('/api/auth/logout', { method: 'POST' });
 function syncTopicControls() { document.querySelectorAll('[data-topic]').forEach((item) => item.classList.toggle('active', item.dataset.topic === state.topic)); }
 function selectTopic(topic) { trackEvent('feed_topic_select', { topic }); state.topic = topic; state.sourceId = null; state.bestPeriod = null; state.feedSort = 'recent'; syncTopicControls(); if (!$('#articleList')) { location.href = `/?topic=${encodeURIComponent(topic)}`; return; } history.replaceState(null, '', topic === 'all' ? '/' : `/?topic=${encodeURIComponent(topic)}`); renderSources(); loadFeed(); }
 function selectSource(sourceId) { const selectedSourceId = Number(sourceId) || null; trackEvent('feed_source_select', { source_id: selectedSourceId, best_period: state.bestPeriod || 'latest' }); state.sourceId = selectedSourceId; state.topic = 'all'; state.feedSort = 'recent'; syncTopicControls(); const query = new URLSearchParams(); if (state.bestPeriod) query.set('best', state.bestPeriod); if (selectedSourceId) query.set('source', selectedSourceId); history.replaceState(null, '', query.size ? `/?${query}` : '/'); renderSources(); loadFeed(); }
-function selectBest(period = 'day') { const selectedPeriod = ['day', 'week', 'month'].includes(period) ? period : 'day'; trackEvent('highlights_period_select', { period: selectedPeriod, source_id: state.sourceId || 'all' }); state.bestPeriod = selectedPeriod; state.feedSort = 'recent'; state.topic = 'all'; syncTopicControls(); const query = new URLSearchParams({ best: selectedPeriod }); if (state.sourceId) query.set('source', state.sourceId); if (!$('#articleList')) { location.href = `/?${query}`; return; } history.replaceState(null, '', `/?${query}`); renderSources(); loadFeed(); }
-function selectFeedSort(sort) { const selectedSort = ['recent', 'views', 'comments'].includes(sort) ? sort : 'recent'; trackEvent('personal_feed_sort', { sort: selectedSort }); state.feedSort = selectedSort; const query = new URLSearchParams(); if (selectedSort !== 'recent') query.set('sort', selectedSort); history.replaceState(null, '', query.size ? `/?${query}` : '/'); loadFeed(); }
+function selectBest(period = 'day') { const selectedPeriod = ['day', 'week', 'month'].includes(period) ? period : 'day'; trackEvent('highlights_period_select', { period: selectedPeriod, source_id: state.sourceId || 'all', sort: state.feedSort }); state.bestPeriod = selectedPeriod; state.topic = 'all'; syncTopicControls(); const query = new URLSearchParams({ best: selectedPeriod }); if (state.sourceId) query.set('source', state.sourceId); if (state.feedSort !== 'recent') query.set('sort', state.feedSort); if (!$('#articleList')) { location.href = `/?${query}`; return; } history.replaceState(null, '', `/?${query}`); renderSources(); loadFeed(); }
+function selectFeedSort(sort) { const selectedSort = ['recent', 'views', 'comments'].includes(sort) ? sort : 'recent'; trackEvent('personal_feed_sort', { sort: selectedSort, period: state.bestPeriod || 'all' }); state.feedSort = selectedSort; const query = new URLSearchParams(); if (state.bestPeriod) query.set('best', state.bestPeriod); if (state.sourceId) query.set('source', state.sourceId); if (selectedSort !== 'recent') query.set('sort', selectedSort); history.replaceState(null, '', query.size ? `/?${query}` : '/'); loadFeed(); }
 document.querySelectorAll('[data-topic]').forEach((button) => button.addEventListener('click', () => selectTopic(button.dataset.topic)));
 $('#themeToggle').addEventListener('click', () => document.body.classList.toggle('dark'));
 $('#sidebarTheme').addEventListener('click', () => document.body.classList.toggle('dark'));
