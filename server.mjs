@@ -25,7 +25,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS user_sources (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (user_id, source_id));
   CREATE TABLE IF NOT EXISTS user_settings (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, language TEXT NOT NULL DEFAULT 'ru' CHECK(language IN ('ru', 'en')));
   CREATE TABLE IF NOT EXISTS translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, summary TEXT, PRIMARY KEY (article_id, language));
-  CREATE TABLE IF NOT EXISTS article_pages (article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE, original_title TEXT NOT NULL, original_content TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE TABLE IF NOT EXISTS article_pages (article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE, original_title TEXT NOT NULL, original_content TEXT NOT NULL, original_markup TEXT NOT NULL DEFAULT '', fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS article_page_translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY (article_id, language));
   CREATE TABLE IF NOT EXISTS user_profiles (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, display_name TEXT NOT NULL, bio TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '');
   CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id INTEGER, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -41,6 +41,7 @@ if (!db.prepare("SELECT name FROM pragma_table_info('user_profiles') WHERE name 
 if (!db.prepare("SELECT name FROM pragma_table_info('user_profiles') WHERE name = 'avatar_url'").get()) db.exec("ALTER TABLE user_profiles ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("SELECT name FROM pragma_table_info('articles') WHERE name = 'view_count'").get()) db.exec('ALTER TABLE articles ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0');
 if (!db.prepare("SELECT name FROM pragma_table_info('user_posts') WHERE name = 'view_count'").get()) db.exec('ALTER TABLE user_posts ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0');
+if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup'").get()) db.exec("ALTER TABLE article_pages ADD COLUMN original_markup TEXT NOT NULL DEFAULT ''");
 
 const SOURCE_SEED = [
   ['OpenAI', 'https://openai.com/news/', 'https://openai.com/news/rss.xml', '#cefa62'],
@@ -58,6 +59,9 @@ let refreshPromise = null;
 
 function clean(value = '') {
   return decodeEntities(value.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+}
+function escapeHtml(value = '') {
+  return String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 }
 function decodeEntities(value) {
   return value.replace(/&(?:amp|lt|gt|quot|apos|#39);/g, (entity) => ({ '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'", '&#39;': "'" })[entity] || entity);
@@ -212,13 +216,90 @@ function extractPageContent(html) {
     return decodeEntities(withBreaks.replace(/<[^>]+>/g, ' ')).split(/\n\s*\n/).map((part) => part.replace(/\s+/g, ' ').trim()).filter((part) => part.length > 35).slice(0, 220).join('\n\n').slice(0, 100000);
   }).sort((left, right) => right.length - left.length)[0] || '';
 }
+function safeExternalUrl(value, base) {
+  try {
+    const url = new URL(decodeEntities(String(value || '').trim()), base);
+    if (url.protocol !== 'https:') return '';
+    if (url.hostname === 'api.dtf.ru' && /^\/v2\.8\/redirect$/.test(url.pathname)) {
+      const target = url.searchParams.get('to');
+      if (target?.startsWith('https://')) return target;
+    }
+    return url.href;
+  } catch { return ''; }
+}
+function safeRichMarkup(html, base) {
+  const allowed = new Set(['p', 'h2', 'h3', 'ul', 'ol', 'li', 'blockquote', 'strong', 'b', 'em', 'i', 'br', 'a']);
+  return String(html || '').replace(/<[^>]*>/g, (rawTag) => {
+    const match = rawTag.match(/^<\s*(\/?)\s*([a-z0-9]+)/i);
+    if (!match) return '';
+    const closing = Boolean(match[1]);
+    const name = match[2].toLowerCase();
+    if (!allowed.has(name)) return '';
+    if (name === 'br') return closing ? '' : '<br />';
+    if (name !== 'a') return `<${closing ? '/' : ''}${name}>`;
+    if (closing) return '</a>';
+    const href = rawTag.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    const url = safeExternalUrl(href?.[1] || href?.[2] || href?.[3], base);
+    return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">` : '<a>';
+  }).replace(/<p>\s*<\/p>/gi, '').trim();
+}
+function jsonObjectAt(source, from) {
+  const start = source.indexOf('{', from);
+  if (start < 0) return null;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === '{') depth += 1;
+    else if (character === '}' && --depth === 0) {
+      try { return JSON.parse(source.slice(start, index + 1)); } catch { return null; }
+    }
+  }
+  return null;
+}
+function dtfRichPage(html, article) {
+  const articleId = new URL(article.url).pathname.match(/\/(\d+)(?:-|$)/)?.[1];
+  const markerIndex = articleId ? html.indexOf(`"entry@${articleId}":`) : -1;
+  const entry = markerIndex >= 0 ? jsonObjectAt(html, markerIndex) : null;
+  if (!entry?.blocks) return null;
+  const markup = [];
+  for (const block of entry.blocks) {
+    if (block.hidden) continue;
+    if (block.type === 'text' && block.data?.text) markup.push(safeRichMarkup(block.data.text, article.url));
+    if (block.type === 'list' && Array.isArray(block.data?.items)) {
+      const listTag = block.data.type === 'OL' ? 'ol' : 'ul';
+      const items = block.data.items.map((item) => `<li>${safeRichMarkup(item, article.url)}</li>`).join('');
+      if (items) markup.push(`<${listTag}>${items}</${listTag}>`);
+    }
+    if (block.type === 'media' && Array.isArray(block.data?.items)) {
+      for (const item of block.data.items.slice(0, 12)) {
+        const image = item.image?.data;
+        if (!image?.uuid) continue;
+        const src = `https://leonardo.osnova.io/${image.uuid}/-/format/webp/`;
+        const caption = clean(item.title || '');
+        markup.push(`<figure><img src="${src}" alt="" loading="lazy" referrerpolicy="no-referrer" />${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ''}</figure>`);
+      }
+    }
+    if (block.type === 'quote' && block.data?.text) markup.push(`<blockquote>${safeRichMarkup(block.data.text, article.url)}</blockquote>`);
+  }
+  const content = clean(markup.join('\n'));
+  return markup.length && content.length >= 80 ? { title: clean(entry.title || article.title).slice(0, 500), content, markup: markup.join('\n') } : null;
+}
 function pageTitleFromHtml(html, fallback) {
   const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1];
   return clean(ogTitle || tag(html, 'title') || fallback).slice(0, 500);
 }
 async function loadOriginalPage(article) {
-  const cached = db.prepare('SELECT original_title AS title, original_content AS content FROM article_pages WHERE article_id = ?').get(article.id);
-  if (cached?.content.length >= 200) return cached;
+  const cached = db.prepare('SELECT original_title AS title, original_content AS content, original_markup AS markup FROM article_pages WHERE article_id = ?').get(article.id);
+  if (cached?.content.length >= 200 && (article.sourceName !== 'DTF' || cached.markup)) return cached;
   let page;
   try {
     const destination = new URL(article.url);
@@ -226,13 +307,13 @@ async function loadOriginalPage(article) {
     const response = await fetch(destination, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36', 'Accept-Language': 'en-US,en;q=0.9' }, signal: AbortSignal.timeout(20000) });
     if (!response.ok) throw new Error(`Источник вернул HTTP ${response.status}`);
     const html = await response.text();
-    page = { title: pageTitleFromHtml(html, article.title), content: extractPageContent(html) };
+    page = (article.sourceName === 'DTF' ? dtfRichPage(html, article) : null) || { title: pageTitleFromHtml(html, article.title), content: extractPageContent(html), markup: '' };
   } catch (error) {
     console.error(`Could not copy article ${article.id}: ${error.message}`);
-    page = { title: article.title, content: article.summary || 'Источник временно не разрешил загрузку полного текста. Откройте оригинал по ссылке выше.' };
+    page = { title: article.title, content: article.summary || 'Источник временно не разрешил загрузку полного текста. Откройте оригинал по ссылке выше.', markup: '' };
   }
   if (page.content.length < 80) page.content = article.summary || 'Источник временно не разрешил загрузку полного текста. Откройте оригинал по ссылке выше.';
-  db.prepare('INSERT OR REPLACE INTO article_pages (article_id, original_title, original_content) VALUES (?, ?, ?)').run(article.id, page.title, page.content);
+  db.prepare('INSERT OR REPLACE INTO article_pages (article_id, original_title, original_content, original_markup) VALUES (?, ?, ?, ?)').run(article.id, page.title, page.content, page.markup || '');
   return page;
 }
 async function translateText(text, language) {
@@ -268,7 +349,8 @@ async function articlePage(user, articleId) {
   if (!article) return null;
   const language = user ? preferences(user.id).language : 'ru';
   const original = await loadOriginalPage(article);
-  if (language === 'en') return { ...article, ...original, language, originalUrl: article.url };
+  if (language === 'en') return { ...article, ...original, language, originalUrl: article.url, markup: original.markup || '' };
+  if (article.sourceName === 'DTF' && original.markup) return { ...article, ...original, language: 'ru', originalUrl: article.url, markup: original.markup };
   const cached = db.prepare('SELECT title, content FROM article_page_translations WHERE article_id = ? AND language = ?').get(article.id, language);
   if (cached?.content.length >= 200) return { ...article, title: cached.title, content: cached.content, language, originalUrl: article.url };
   try {
