@@ -1,5 +1,6 @@
 const initialBestPeriod = new URLSearchParams(location.search).get('best');
-const state = { user: null, preferences: { topics: [], sources: [], language: 'ru' }, sources: [], topic: new URLSearchParams(location.search).get('topic') || 'all', sourceId: Number(new URLSearchParams(location.search).get('source')) || null, bestPeriod: ['day', 'week', 'month'].includes(initialBestPeriod) ? initialBestPeriod : null, isLogin: true };
+const initialFeedSort = new URLSearchParams(location.search).get('sort');
+const state = { user: null, preferences: { topics: [], sources: [], language: 'ru' }, sources: [], topic: new URLSearchParams(location.search).get('topic') || 'all', sourceId: Number(new URLSearchParams(location.search).get('source')) || null, bestPeriod: ['day', 'week', 'month'].includes(initialBestPeriod) ? initialBestPeriod : null, feedSort: ['recent', 'views', 'comments'].includes(initialFeedSort) ? initialFeedSort : 'recent', isLogin: true };
 const labels = { models: 'Модели', dev: 'Dev', research: 'Research', tools: 'Tools', games: 'Игры', business: 'Бизнес', media: 'Медиа' };
 const topicChoices = [['models', 'Модели и LLM'], ['dev', 'Разработка'], ['research', 'Исследования'], ['tools', 'Инструменты'], ['games', 'Игры'], ['business', 'Бизнес'], ['media', 'Медиа']];
 const $ = (selector) => document.querySelector(selector);
@@ -110,12 +111,19 @@ async function loadFeed() {
       ownPosts = posts.map((post) => ({ ...post, summary: post.blocks.find((block) => block.type === 'paragraph' || block.type === 'quote')?.text || 'Авторская публикация сообщества.' }));
     }
   }
-  const allItems = isHighlights ? articles : [...ownPosts, ...articles].sort((left, right) => new Date(right.publishedAt) - new Date(left.publishedAt));
+  const canSortPersonal = personalized && !isHighlights && !state.sourceId && state.topic === 'all';
+  const allItems = isHighlights ? articles : [...ownPosts, ...articles].sort((left, right) => {
+    if (canSortPersonal && state.feedSort === 'views') return Number(right.viewCount || 0) - Number(left.viewCount || 0) || Number(right.commentCount || 0) - Number(left.commentCount || 0) || new Date(right.publishedAt) - new Date(left.publishedAt);
+    if (canSortPersonal && state.feedSort === 'comments') return Number(right.commentCount || 0) - Number(left.commentCount || 0) || Number(right.viewCount || 0) - Number(left.viewCount || 0) || new Date(right.publishedAt) - new Date(left.publishedAt);
+    return new Date(right.publishedAt) - new Date(left.publishedAt);
+  });
   const periodNames = { day: 'день', week: 'неделю', month: 'месяц' };
   $('#feedHeading').textContent = isHighlights ? `Лучшие материалы${selectedSource ? ` · ${selectedSource.name}` : ''} за ${periodNames[state.bestPeriod]}` : (selectedSource ? `${selectedSource.name} — последние материалы` : (personalized ? 'Ваша персональная лента' : 'Свежие публикации'));
   $('#sourceFeedReset').hidden = !selectedSource;
   $('#bestPeriods').hidden = !isHighlights;
+  $('#personalSort').hidden = !canSortPersonal;
   document.querySelectorAll('[data-best-period]').forEach((button) => button.classList.toggle('active', button.dataset.bestPeriod === state.bestPeriod));
+  document.querySelectorAll('[data-feed-sort]').forEach((button) => button.classList.toggle('active', button.dataset.feedSort === state.feedSort));
   $('#articleList').innerHTML = allItems.length ? allItems.map(articleMarkup).join('') : '<div class="empty-state"><strong>Пока нет публикаций по этим условиям.</strong><span>Попробуйте включить больше тем или обновить ленту.</span></div>';
   $('#refreshLabel').textContent = `Лента обновлена · ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
 }
@@ -158,9 +166,10 @@ function openSettings() {
 async function logout() { await request('/api/auth/logout', { method: 'POST' }); state.user = null; state.preferences = { topics: [], sources: [], language: 'ru' }; renderProfile(); if (location.pathname !== '/') { location.href = '/'; return; } loadFeed(); }
 
 function syncTopicControls() { document.querySelectorAll('[data-topic]').forEach((item) => item.classList.toggle('active', item.dataset.topic === state.topic)); }
-function selectTopic(topic) { trackEvent('feed_topic_select', { topic }); state.topic = topic; state.sourceId = null; state.bestPeriod = null; syncTopicControls(); if (!$('#articleList')) { location.href = `/?topic=${encodeURIComponent(topic)}`; return; } history.replaceState(null, '', topic === 'all' ? '/' : `/?topic=${encodeURIComponent(topic)}`); renderSources(); loadFeed(); }
-function selectSource(sourceId) { const selectedSourceId = Number(sourceId) || null; trackEvent('feed_source_select', { source_id: selectedSourceId, best_period: state.bestPeriod || 'latest' }); state.sourceId = selectedSourceId; state.topic = 'all'; syncTopicControls(); const query = new URLSearchParams(); if (state.bestPeriod) query.set('best', state.bestPeriod); if (selectedSourceId) query.set('source', selectedSourceId); history.replaceState(null, '', query.size ? `/?${query}` : '/'); renderSources(); loadFeed(); }
-function selectBest(period = 'day') { const selectedPeriod = ['day', 'week', 'month'].includes(period) ? period : 'day'; trackEvent('highlights_period_select', { period: selectedPeriod, source_id: state.sourceId || 'all' }); state.bestPeriod = selectedPeriod; state.topic = 'all'; syncTopicControls(); const query = new URLSearchParams({ best: selectedPeriod }); if (state.sourceId) query.set('source', state.sourceId); if (!$('#articleList')) { location.href = `/?${query}`; return; } history.replaceState(null, '', `/?${query}`); renderSources(); loadFeed(); }
+function selectTopic(topic) { trackEvent('feed_topic_select', { topic }); state.topic = topic; state.sourceId = null; state.bestPeriod = null; state.feedSort = 'recent'; syncTopicControls(); if (!$('#articleList')) { location.href = `/?topic=${encodeURIComponent(topic)}`; return; } history.replaceState(null, '', topic === 'all' ? '/' : `/?topic=${encodeURIComponent(topic)}`); renderSources(); loadFeed(); }
+function selectSource(sourceId) { const selectedSourceId = Number(sourceId) || null; trackEvent('feed_source_select', { source_id: selectedSourceId, best_period: state.bestPeriod || 'latest' }); state.sourceId = selectedSourceId; state.topic = 'all'; state.feedSort = 'recent'; syncTopicControls(); const query = new URLSearchParams(); if (state.bestPeriod) query.set('best', state.bestPeriod); if (selectedSourceId) query.set('source', selectedSourceId); history.replaceState(null, '', query.size ? `/?${query}` : '/'); renderSources(); loadFeed(); }
+function selectBest(period = 'day') { const selectedPeriod = ['day', 'week', 'month'].includes(period) ? period : 'day'; trackEvent('highlights_period_select', { period: selectedPeriod, source_id: state.sourceId || 'all' }); state.bestPeriod = selectedPeriod; state.feedSort = 'recent'; state.topic = 'all'; syncTopicControls(); const query = new URLSearchParams({ best: selectedPeriod }); if (state.sourceId) query.set('source', state.sourceId); if (!$('#articleList')) { location.href = `/?${query}`; return; } history.replaceState(null, '', `/?${query}`); renderSources(); loadFeed(); }
+function selectFeedSort(sort) { const selectedSort = ['recent', 'views', 'comments'].includes(sort) ? sort : 'recent'; trackEvent('personal_feed_sort', { sort: selectedSort }); state.feedSort = selectedSort; const query = new URLSearchParams(); if (selectedSort !== 'recent') query.set('sort', selectedSort); history.replaceState(null, '', query.size ? `/?${query}` : '/'); loadFeed(); }
 document.querySelectorAll('[data-topic]').forEach((button) => button.addEventListener('click', () => selectTopic(button.dataset.topic)));
 $('#themeToggle').addEventListener('click', () => document.body.classList.toggle('dark'));
 $('#sidebarTheme').addEventListener('click', () => document.body.classList.toggle('dark'));
@@ -175,6 +184,7 @@ $('#accountButton').addEventListener('click', () => state.user ? openSettings() 
 $('#setupButton').addEventListener('click', openSettings); $('#sourcesSetup').addEventListener('click', openSettings);
 $('#sourceFeedReset').addEventListener('click', () => selectSource(null));
 document.querySelectorAll('[data-best-period]').forEach((button) => button.addEventListener('click', () => selectBest(button.dataset.bestPeriod)));
+document.querySelectorAll('[data-feed-sort]').forEach((button) => button.addEventListener('click', () => selectFeedSort(button.dataset.feedSort)));
 function openImageViewer(image) {
   const dialog = $('#imageDialog');
   const target = $('#imageDialogImage');
