@@ -44,6 +44,7 @@ if (!db.prepare("SELECT name FROM pragma_table_info('articles') WHERE name = 'so
 if (!db.prepare("SELECT name FROM pragma_table_info('user_posts') WHERE name = 'view_count'").get()) db.exec('ALTER TABLE user_posts ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0');
 if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup'").get()) db.exec("ALTER TABLE article_pages ADD COLUMN original_markup TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup_version'").get()) db.exec('ALTER TABLE article_pages ADD COLUMN original_markup_version INTEGER NOT NULL DEFAULT 1');
+if (!db.prepare("SELECT name FROM pragma_table_info('article_page_translations') WHERE name = 'markup'").get()) db.exec("ALTER TABLE article_page_translations ADD COLUMN markup TEXT NOT NULL DEFAULT ''");
 
 const SOURCE_SEED = [
   ['OpenAI', 'https://openai.com/news/', 'https://openai.com/news/rss.xml', '#cefa62'],
@@ -58,7 +59,7 @@ const SOURCE_SEED = [
 const insertSource = db.prepare('INSERT OR IGNORE INTO sources (name, url, feed_url, accent) VALUES (?, ?, ?, ?)');
 SOURCE_SEED.forEach((source) => insertSource.run(...source));
 const TOPICS = ['models', 'dev', 'research', 'tools', 'games', 'business', 'media'];
-const RICH_MARKUP_VERSION = 7;
+const RICH_MARKUP_VERSION = 8;
 let lastRefresh = 0;
 let refreshPromise = null;
 
@@ -280,7 +281,7 @@ function safeRichMarkup(html, base) {
     if (closing) return '</a>';
     const href = rawTag.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
     const url = safeExternalUrl(href?.[1] || href?.[2] || href?.[3], base);
-    return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">` : '<a>';
+    return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">` : '';
   }).replace(/<p>\s*<\/p>/gi, '').trim();
 }
 function elementInnerHtml(html, openingPattern) {
@@ -309,7 +310,7 @@ function genericRichPage(html, article) {
   const withoutHeader = fragment.replace(/<header\b[^>]*>[\s\S]*?<\/header>/gi, '');
   const markup = safeRichMarkup(withoutHeader, article.url).replace(/(?:<br>\s*){3,}/g, '<br><br>').trim();
   const content = extractPageContent(withoutHeader, true);
-  return /<(h2|h3|h4|ul|ol|blockquote|pre|figure)\b/i.test(markup) && content.length >= 80 ? { title: pageTitleFromHtml(html, article.title), content, markup } : null;
+  return /<(p|h2|h3|h4|ul|ol|blockquote|pre|figure|a)\b/i.test(markup) && content.length >= 80 ? { title: pageTitleFromHtml(html, article.title), content, markup } : null;
 }
 function contentMarkupWithCode(content, originalMarkup) {
   const codeBlocks = [...String(originalMarkup || '').matchAll(/<pre\b[^>]*>[\s\S]*?<\/pre>/gi)].map((match) => match[0]);
@@ -433,19 +434,55 @@ async function translateLongText(content, language) {
   await Promise.all(Array.from({ length: Math.min(4, chunks.length) }, worker));
   return translated.join('\n\n');
 }
+async function translateMarkup(markup, language, base) {
+  const protectedParts = [];
+  const protect = (value, type) => {
+    const token = `[[SUPA_${type}_${protectedParts.length}]]`;
+    protectedParts.push({ token, value });
+    return token;
+  };
+  const marked = String(markup || '')
+    .replace(/<pre\b[^>]*>[\s\S]*?<\/pre>/gi, (value) => protect(value, 'CODE'))
+    .replace(/<figure\b[^>]*>[\s\S]*?<\/figure>/gi, (value) => protect(value, 'MEDIA'))
+    .replace(/<a\b[^>]*>/gi, (value) => protect(value, 'LINK_START'))
+    .replace(/<\/a>/gi, (value) => protect(value, 'LINK_END'));
+  const pieces = marked.split(/(?=<(?:p|h2|h3|h4|li|blockquote)\b)/i).filter(Boolean);
+  const chunks = [];
+  let chunk = '';
+  for (const piece of pieces) {
+    if (chunk && chunk.length + piece.length > 3800) { chunks.push(chunk); chunk = ''; }
+    chunk += piece;
+  }
+  if (chunk) chunks.push(chunk);
+  const translated = [];
+  for (const current of chunks.length ? chunks : [marked]) translated.push(await translateText(current, language));
+  let result = translated.join('');
+  for (const part of protectedParts) result = result.split(part.token).join(part.value);
+  return safeRichMarkup(result, base);
+}
 async function articlePage(user, articleId) {
   const article = db.prepare('SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE articles.id = ?').get(articleId);
   if (!article) return null;
   const language = user ? preferences(user.id).language : 'ru';
   const original = await loadOriginalPage(article);
   if (language === 'en') return { ...article, ...original, language, originalUrl: article.url, markup: original.markup || '' };
-  if (article.sourceName === 'DTF' && original.markup) return { ...article, ...original, language: 'ru', originalUrl: article.url, markup: original.markup };
-  if (article.sourceName === 'Habr' && original.markup) return { ...article, ...original, language: 'ru', originalUrl: article.url, markup: original.markup };
-  const cached = db.prepare('SELECT title, content FROM article_page_translations WHERE article_id = ? AND language = ?').get(article.id, language);
-  if (cached?.content.length >= 200 && !original.markup.includes('<pre')) return { ...article, title: cached.title, content: cached.content, language, originalUrl: article.url };
+  if ((article.sourceName === 'DTF' || article.sourceName === 'Habr') && original.markup) return { ...article, ...original, language: 'ru', originalUrl: article.url, markup: original.markup };
+  const cached = db.prepare('SELECT title, content, markup FROM article_page_translations WHERE article_id = ? AND language = ?').get(article.id, language);
+  if (original.markup && cached?.markup) return { ...article, title: cached.title, content: cached.content, language, originalUrl: article.url, markup: cached.markup };
+  if (original.markup) {
+    try {
+      const [title, content, markup] = await Promise.all([translateText(original.title, language), translateLongText(original.content, language), translateMarkup(original.markup, language, article.url)]);
+      db.prepare('INSERT OR REPLACE INTO article_page_translations (article_id, language, title, content, markup) VALUES (?, ?, ?, ?, ?)').run(article.id, language, title, content, markup);
+      return { ...article, title, content, language, originalUrl: article.url, markup };
+    } catch (error) {
+      console.error(`Could not translate article markup ${article.id}: ${error.message}`);
+      return { ...article, ...original, language: 'en', originalUrl: article.url, markup: original.markup };
+    }
+  }
+  if (cached?.content.length >= 200) return { ...article, title: cached.title, content: cached.content, language, originalUrl: article.url };
   try {
     const [title, content] = await Promise.all([translateText(original.title, language), translateLongText(original.content, language)]);
-    db.prepare('INSERT OR REPLACE INTO article_page_translations (article_id, language, title, content) VALUES (?, ?, ?, ?)').run(article.id, language, title, content);
+    db.prepare('INSERT OR REPLACE INTO article_page_translations (article_id, language, title, content, markup) VALUES (?, ?, ?, ?, ?)').run(article.id, language, title, content, '');
     return { ...article, title, content, language, originalUrl: article.url, markup: contentMarkupWithCode(content, original.markup) };
   } catch (error) {
     console.error(`Could not translate article page ${article.id}: ${error.message}`);
