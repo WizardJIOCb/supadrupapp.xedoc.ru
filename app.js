@@ -36,6 +36,8 @@ function renderSources() {
 function renderProfile() {
   const accountButton = $('#accountButton');
   if (accountButton) accountButton.textContent = state.user ? 'Настройки' : 'Войти';
+  const profileButton = $('#profileButton');
+  if (profileButton) profileButton.hidden = !state.user;
   const profileContent = $('#profileContent');
   if (!profileContent) return;
   profileContent.innerHTML = state.user ? `<div class="profile-email">${escapeHtml(state.user.email)}</div><p>Язык: ${state.preferences.language === 'en' ? 'English' : 'Русский'}<br />Темы: ${state.preferences.topics.length ? state.preferences.topics.map((topic) => labels[topic]).join(', ') : 'все'}</p><button class="subscribe-button" id="profileSettings">Изменить поток <span>→</span></button><button class="logout-button" id="logoutButton">Выйти</button>` : '<p>Войдите, чтобы выбирать темы, источники и язык своей ленты.</p><button class="subscribe-button" id="profileLogin">Создать аккаунт <span>↗</span></button>';
@@ -63,11 +65,12 @@ function openSettings() {
   $('#settingsMessage').textContent = '';
   $('#settingsDialog').showModal();
 }
-async function logout() { await request('/api/auth/logout', { method: 'POST' }); state.user = null; state.preferences = { topics: [], sources: [], language: 'ru' }; renderProfile(); loadFeed(); }
+async function logout() { await request('/api/auth/logout', { method: 'POST' }); state.user = null; state.preferences = { topics: [], sources: [], language: 'ru' }; renderProfile(); if (location.pathname !== '/') { location.href = '/'; return; } loadFeed(); }
 
 document.querySelectorAll('.topic').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('.topic').forEach((item) => item.classList.remove('active')); button.classList.add('active'); state.topic = button.dataset.topic; loadFeed(); }));
 $('#themeToggle').addEventListener('click', () => document.body.classList.toggle('dark'));
 $('#writeButton').addEventListener('click', () => { location.href = '/write'; });
+$('#profileButton').addEventListener('click', () => { if (state.user) location.href = `/profile/${state.user.id}`; });
 $('#accountButton').addEventListener('click', () => state.user ? openSettings() : openAuth(true));
 $('#setupButton').addEventListener('click', openSettings); $('#sourcesSetup').addEventListener('click', openSettings);
 $('#profileLogin')?.addEventListener('click', () => openAuth(false));
@@ -143,10 +146,11 @@ async function renderProfilePage(profileId, activeTab = 'posts') {
   const ownProfile = state.user?.id === profile.id;
   const avatar = avatarMarkup(profile.displayName, profile.avatarUrl, 'profile-avatar');
   const content = activeTab === 'posts' ? profilePostsMarkup(posts) : profileCommentsMarkup(comments);
-  const editor = ownProfile ? `<form class="profile-edit" id="profileEditForm"><label>Имя<input name="displayName" maxlength="60" value="${escapeHtml(profile.displayName)}" required /></label><label class="profile-avatar-upload">Аватар<input data-profile-avatar type="file" accept="image/png,image/jpeg,image/webp" /><span>PNG, JPEG или WebP · до 5 МБ</span></label><input name="avatarUrl" type="hidden" value="${escapeHtml(profile.avatarUrl)}" /><label>О себе<textarea name="bio" maxlength="600" placeholder="Расскажите немного о себе">${escapeHtml(profile.bio)}</textarea></label><button>Сохранить профиль</button><small id="profileEditMessage"></small></form>` : '';
+  const editor = ownProfile ? `<form class="profile-edit" id="profileEditForm"><label>Имя<input name="displayName" maxlength="60" value="${escapeHtml(profile.displayName)}" required /></label><label class="profile-avatar-upload">Аватар<input data-profile-avatar type="file" accept="image/png,image/jpeg,image/webp" /><span>PNG, JPEG или WebP · до 5 МБ</span></label><input name="avatarUrl" type="hidden" value="${escapeHtml(profile.avatarUrl)}" /><label>О себе<textarea name="bio" maxlength="600" placeholder="Расскажите немного о себе">${escapeHtml(profile.bio)}</textarea></label><div class="profile-edit-actions"><button>Сохранить профиль</button><button type="button" class="profile-logout" id="profileLogout">Выйти из аккаунта</button></div><small id="profileEditMessage"></small></form>` : '';
   $('main').innerHTML = `<section class="profile-page"><a class="reader-back" href="/">← Вернуться к ленте</a><header class="profile-hero">${avatar}<div><p class="eyebrow">Профиль автора</p><h1>${escapeHtml(profile.displayName)}</h1><p>${escapeHtml(profile.bio || 'Пока без описания.')}</p><small>На supa с ${new Date(profile.createdAt).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</small></div></header>${editor}<nav class="profile-tabs" aria-label="Разделы профиля"><button class="${activeTab === 'posts' ? 'active' : ''}" data-profile-tab="posts">Статьи <span>${posts.length}</span></button><button class="${activeTab === 'comments' ? 'active' : ''}" data-profile-tab="comments">Комментарии <span>${comments.length}</span></button></nav><section class="profile-activity">${content}</section></section>`;
   document.querySelectorAll('[data-profile-tab]').forEach((button) => button.addEventListener('click', () => renderProfilePage(profile.id, button.dataset.profileTab)));
   $('#profileEditForm')?.addEventListener('change', async (event) => { const input = event.target; if (!input.matches('[data-profile-avatar]') || !input.files[0]) return; const message = $('#profileEditMessage'); if (input.files[0].size > 5000000) { message.textContent = 'Изображение должно быть не больше 5 МБ.'; return; } const reader = new FileReader(); reader.onload = async () => { try { const { url } = await request('/api/uploads', { method: 'POST', body: JSON.stringify({ dataUrl: reader.result }) }); $('#profileEditForm').elements.avatarUrl.value = url; document.querySelector('.profile-hero .profile-avatar').innerHTML = `<img src="${escapeHtml(url)}" alt="" />`; message.textContent = 'Аватар загружен. Сохраните профиль.'; } catch (error) { message.textContent = error.message; } }; reader.readAsDataURL(input.files[0]); });
+  $('#profileLogout')?.addEventListener('click', logout);
   $('#profileEditForm')?.addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); const message = $('#profileEditMessage'); try { const updated = await request('/api/profile', { method: 'PUT', body: JSON.stringify({ displayName: form.get('displayName'), bio: form.get('bio'), avatarUrl: form.get('avatarUrl') }) }); state.user = updated.user; renderProfile(); await renderProfilePage(profile.id, activeTab); } catch (error) { message.textContent = error.message; } });
 }
 function blankBlock(type) { if (type === 'image') return { type, url: '', caption: '' }; if (type === 'poll') return { type, id: crypto.randomUUID().slice(0, 16), question: '', options: ['', ''] }; return { type, text: type === 'divider' ? '' : '' }; }
