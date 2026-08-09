@@ -23,6 +23,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS user_sources (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (user_id, source_id));
   CREATE TABLE IF NOT EXISTS user_settings (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, language TEXT NOT NULL DEFAULT 'ru' CHECK(language IN ('ru', 'en')));
   CREATE TABLE IF NOT EXISTS translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, summary TEXT, PRIMARY KEY (article_id, language));
+  CREATE TABLE IF NOT EXISTS article_pages (article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE, original_title TEXT NOT NULL, original_content TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE TABLE IF NOT EXISTS article_page_translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY (article_id, language));
 `);
 
 const SOURCE_SEED = [
@@ -171,6 +173,74 @@ async function translateArticles(articles, language) {
   await Promise.all(Array.from({ length: Math.min(6, articles.length) }, worker));
   return articles.map((article) => result.find((translated) => translated.id === article.id) || article);
 }
+function extractPageContent(html) {
+  const article = html.match(/<article(?:\s[^>]*)?>([\s\S]*?)<\/article>/i)?.[1] || html.match(/<main(?:\s[^>]*)?>([\s\S]*?)<\/main>/i)?.[1] || html.match(/<body(?:\s[^>]*)?>([\s\S]*?)<\/body>/i)?.[1] || html;
+  const withoutChrome = article.replace(/<(script|style|svg|nav|header|footer|aside|form|noscript)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+  const withBreaks = withoutChrome.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|h1|h2|h3|h4|li|blockquote|pre|div|section)>/gi, '\n\n');
+  return decodeEntities(withBreaks.replace(/<[^>]+>/g, ' ')).split(/\n\s*\n/).map((part) => part.replace(/\s+/g, ' ').trim()).filter((part) => part.length > 35).slice(0, 220).join('\n\n').slice(0, 100000);
+}
+function pageTitleFromHtml(html, fallback) {
+  const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  return clean(ogTitle || tag(html, 'title') || fallback).slice(0, 500);
+}
+async function loadOriginalPage(article) {
+  const cached = db.prepare('SELECT original_title AS title, original_content AS content FROM article_pages WHERE article_id = ?').get(article.id);
+  if (cached) return cached;
+  const destination = new URL(article.url);
+  if (destination.protocol !== 'https:') throw new Error('Статья доступна только по HTTPS.');
+  const response = await fetch(destination, { headers: { 'User-Agent': 'signal-ai-news/1.0 (+https://supadrupapp.xedoc.ru)' }, signal: AbortSignal.timeout(20000) });
+  if (!response.ok) throw new Error(`Источник вернул HTTP ${response.status}`);
+  const html = await response.text();
+  const page = { title: pageTitleFromHtml(html, article.title), content: extractPageContent(html) };
+  if (page.content.length < 80) page.content = article.summary || 'Текст статьи недоступен у источника.';
+  db.prepare('INSERT OR REPLACE INTO article_pages (article_id, original_title, original_content) VALUES (?, ?, ?)').run(article.id, page.title, page.content);
+  return page;
+}
+async function translateText(text, language) {
+  if (language === 'en' || !text) return text;
+  const url = new URL('https://translate.googleapis.com/translate_a/single');
+  url.searchParams.set('client', 'gtx');
+  url.searchParams.set('sl', 'auto');
+  url.searchParams.set('tl', language);
+  url.searchParams.set('dt', 't');
+  url.searchParams.set('q', text);
+  const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+  if (!response.ok) throw new Error(`Translation HTTP ${response.status}`);
+  const data = await response.json();
+  return (data[0] || []).map((part) => part[0]).join('');
+}
+async function translateLongText(content, language) {
+  const paragraphs = content.split(/\n\n+/);
+  const chunks = [];
+  let chunk = '';
+  for (const paragraph of paragraphs) {
+    if (chunk && chunk.length + paragraph.length > 4200) { chunks.push(chunk); chunk = ''; }
+    chunk += `${chunk ? '\n\n' : ''}${paragraph}`;
+  }
+  if (chunk) chunks.push(chunk);
+  const translated = [];
+  const queue = [...chunks];
+  const worker = async () => { while (queue.length) translated.push(await translateText(queue.shift(), language)); };
+  await Promise.all(Array.from({ length: Math.min(4, chunks.length) }, worker));
+  return translated.join('\n\n');
+}
+async function articlePage(user, articleId) {
+  const article = db.prepare('SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE articles.id = ?').get(articleId);
+  if (!article) return null;
+  const language = user ? preferences(user.id).language : 'ru';
+  const original = await loadOriginalPage(article);
+  if (language === 'en') return { ...article, ...original, language, originalUrl: article.url };
+  const cached = db.prepare('SELECT title, content FROM article_page_translations WHERE article_id = ? AND language = ?').get(article.id, language);
+  if (cached) return { ...article, title: cached.title, content: cached.content, language, originalUrl: article.url };
+  try {
+    const [title, content] = await Promise.all([translateText(original.title, language), translateLongText(original.content, language)]);
+    db.prepare('INSERT OR REPLACE INTO article_page_translations (article_id, language, title, content) VALUES (?, ?, ?, ?)').run(article.id, language, title, content);
+    return { ...article, title, content, language, originalUrl: article.url };
+  } catch (error) {
+    console.error(`Could not translate article page ${article.id}: ${error.message}`);
+    return { ...article, ...original, language: 'en', originalUrl: article.url };
+  }
+}
 async function feed(user, topic) {
   const selected = user ? preferences(user.id) : { topics: [], sources: [], language: 'ru' };
   const topics = topic && TOPICS.includes(topic) ? [topic] : selected.topics;
@@ -191,6 +261,11 @@ async function api(request, response, url) {
   if (request.method === 'GET' && url.pathname === '/api/feed') {
     const result = await feed(user, url.searchParams.get('topic'));
     return json(response, 200, { ...result, personalized: Boolean(user) });
+  }
+  const articleMatch = url.pathname.match(/^\/api\/articles\/(\d+)$/);
+  if (request.method === 'GET' && articleMatch) {
+    const article = await articlePage(user, Number(articleMatch[1]));
+    return article ? json(response, 200, { article }) : json(response, 404, { error: 'Статья не найдена.' });
   }
   if (request.method === 'POST' && url.pathname === '/api/refresh') {
     const result = await refreshFeeds();
@@ -239,7 +314,7 @@ async function api(request, response, url) {
 }
 async function staticFile(request, response, path) {
   const requested = path === '/' ? 'index.html' : path.slice(1);
-  if (!['index.html', 'styles.css', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
+  if (!['index.html', 'styles.css', 'reader.css', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
   try {
     const file = await readFile(join(staticDir, requested));
     const type = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'application/javascript; charset=utf-8' }[extname(requested)];
