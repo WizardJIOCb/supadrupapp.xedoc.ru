@@ -322,7 +322,7 @@ async function api(request, response, url) {
 }
 async function staticFile(request, response, path) {
   const requested = path === '/' ? 'index.html' : path.slice(1);
-  if (!['index.html', 'styles.css', 'reader.css', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
+  if (!['index.html', 'styles.css', 'reader.css', 'layout.css', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
   try {
     const file = await readFile(join(staticDir, requested));
     const type = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'application/javascript; charset=utf-8' }[extname(requested)];

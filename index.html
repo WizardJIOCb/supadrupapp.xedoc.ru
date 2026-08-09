@@ -10,6 +10,7 @@
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/reader.css" />
+    <link rel="stylesheet" href="/layout.css" />
   </head>
   <body>
     <div class="noise"></div>
@@ -28,22 +29,22 @@
         <button class="topic active" data-topic="all">Всё</button><button class="topic" data-topic="models">Модели</button><button class="topic" data-topic="dev">Разработка</button><button class="topic" data-topic="research">Исследования</button><button class="topic" data-topic="tools">Инструменты</button>
         <button class="refresh-button" id="refreshButton">Обновить <span>↻</span></button>
       </section>
+      <section class="dashboard-strip" id="sources">
+        <section class="profile-card strip-block">
+          <div class="section-label"><span>02</span><h2>Ваш поток</h2><span class="line"></span></div>
+          <div id="profileContent"><p>Войдите, чтобы выбирать темы и получать персональную подборку.</p><button class="subscribe-button" id="profileLogin">Создать аккаунт <span>↗</span></button></div>
+        </section>
+        <section class="sources-card strip-block">
+          <div class="section-label"><span>03</span><h2>Источники</h2><span class="line"></span></div>
+          <div id="sourceList" class="source-list"><p class="loading-copy">Загружаем источники…</p></div>
+          <button class="manage-button" id="sourcesSetup">Настроить источники <span>→</span></button>
+        </section>
+      </section>
       <section class="content-grid" id="feed">
         <div class="feed-column">
           <div class="section-label"><span>01</span><h2 id="feedHeading">Свежие публикации</h2><span class="line"></span></div>
           <div class="article-grid" id="articleList" aria-live="polite"><div class="empty-state">Загружаем ленту…</div></div>
         </div>
-        <aside id="sources">
-          <section class="side-block profile-card">
-            <div class="section-label"><span>02</span><h2>Ваш поток</h2></div>
-            <div id="profileContent"><p>Войдите, чтобы выбирать темы и получать персональную подборку.</p><button class="subscribe-button" id="profileLogin">Создать аккаунт <span>↗</span></button></div>
-          </section>
-          <section class="side-block">
-            <div class="section-label"><span>03</span><h2>Источники</h2></div>
-            <div id="sourceList" class="source-list"><p class="loading-copy">Загружаем источники…</p></div>
-            <button class="manage-button" id="sourcesSetup">Настроить источники <span>→</span></button>
-          </section>
-        </aside>
       </section>
     </main>
     <footer><a class="brand" href="/"><span>signal</span><i>/</i>ai</a><p>Лента для технологического любопытства.</p><span>Реальные RSS-источники · 2026</span></footer>
