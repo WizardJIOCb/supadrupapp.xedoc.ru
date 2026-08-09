@@ -16,7 +16,7 @@
     <link rel="stylesheet" href="/styles.css?v=11" />
     <link rel="stylesheet" href="/reader.css?v=14" />
     <link rel="stylesheet" href="/layout.css" />
-    <link rel="stylesheet" href="/community.css?v=12" />
+    <link rel="stylesheet" href="/community.css?v=13" />
     <link rel="stylesheet" href="/replies.css" />
     <link rel="stylesheet" href="/publisher.css?v=5" />
     <link rel="stylesheet" href="/branding.css?v=2" />
@@ -66,13 +66,12 @@
     </header>
     <main>
       <section class="hero">
-        <p class="eyebrow"><span class="live-dot"></span> <span id="refreshLabel">Собираем свежие публикации</span></p>
+        <p class="eyebrow feed-status"><span><span class="live-dot"></span> <span id="refreshLabel">Собираем свежие публикации</span></span><button class="refresh-button" id="refreshButton">Обновить <span>↻</span></button></p>
         <h1>supa</h1>
         <div class="hero-copy"><p>Настройте ленту под свои интересы — модели, разработки, исследования и инструменты. Новые публикации приходят из выбранных источников.</p><button class="text-button" id="setupButton">Настроить мой поток <span>→</span></button></div>
       </section>
       <section class="topics" aria-label="Темы">
         <button class="topic active" data-topic="all">Всё</button><button class="topic" data-topic="models">Модели</button><button class="topic" data-topic="dev">Разработка</button><button class="topic" data-topic="research">Исследования</button><button class="topic" data-topic="tools">Инструменты</button><button class="topic" data-topic="games">Игры</button><button class="topic" data-topic="business">Бизнес</button><button class="topic" data-topic="media">Медиа</button>
-        <button class="refresh-button" id="refreshButton">Обновить <span>↻</span></button>
       </section>
       <section class="dashboard-strip" id="sources">
         <section class="profile-card strip-block">
