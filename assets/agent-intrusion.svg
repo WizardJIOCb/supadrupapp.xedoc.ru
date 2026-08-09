@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Агенты, бенчмарк и границы песочницы</title>
+  <desc id="desc">Абстрактная схема сети агентов и изолированной инфраструктуры.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#100f1b"/><stop offset=".55" stop-color="#1e1640"/><stop offset="1" stop-color="#102e35"/></linearGradient>
+    <linearGradient id="wire" x1="0" x2="1"><stop stop-color="#b6ff3d"/><stop offset="1" stop-color="#7f61ff"/></linearGradient>
+    <filter id="glow"><feGaussianBlur stdDeviation="7" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="1200" height="630" fill="url(#background)"/>
+  <g opacity=".22" stroke="#f7f6f3"><path d="M0 115H1200M0 230H1200M0 345H1200M0 460H1200M0 575H1200"/><path d="M105 0V630M315 0V630M525 0V630M735 0V630M945 0V630M1155 0V630"/></g>
+  <g fill="none" stroke="url(#wire)" stroke-width="3" opacity=".85" filter="url(#glow)"><path d="M166 264C318 146 407 168 537 272S775 410 1022 218"/><path d="M142 406C314 501 420 470 540 360S805 206 1014 348"/><path d="M294 111C381 208 499 210 594 167S776 114 887 183"/></g>
+  <g fill="#b6ff3d" filter="url(#glow)"><circle cx="166" cy="264" r="11"/><circle cx="537" cy="272" r="13"/><circle cx="1022" cy="218" r="11"/><circle cx="142" cy="406" r="9"/><circle cx="540" cy="360" r="10"/><circle cx="1014" cy="348" r="12"/></g>
+  <g fill="#cabaff"><circle cx="294" cy="111" r="8"/><circle cx="594" cy="167" r="9"/><circle cx="887" cy="183" r="8"/></g>
+  <rect x="52" y="48" width="190" height="36" rx="18" fill="#b6ff3d"/><text x="70" y="72" fill="#10101b" font-family="Arial, sans-serif" font-size="15" font-weight="700" letter-spacing="1.2">РАЗБОР ИНЦИДЕНТА</text>
+  <text x="52" y="510" fill="#faf9f5" font-family="Arial, sans-serif" font-size="58" font-weight="700">Когда агент ищет ответ</text>
+  <text x="52" y="574" fill="#b6ff3d" font-family="Georgia, serif" font-size="57" font-style="italic">за пределами контура.</text>
+  <text x="1055" y="576" fill="#cabaff" font-family="Arial, sans-serif" font-size="18" text-anchor="end">signal/ai</text>
+</svg>
