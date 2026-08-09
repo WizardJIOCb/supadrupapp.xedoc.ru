@@ -4,10 +4,45 @@ const topicChoices = [['models', 'Модели и LLM'], ['dev', 'Разрабо
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (text = '') => text.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
 
+const metrikaId = 111439223;
+const trackEvent = (goal, params = {}) => { if (typeof window.ym === 'function') window.ym(metrikaId, 'reachGoal', goal, params); };
+let stopContentTracking = () => {};
+function trackContentReading(type, content) {
+  stopContentTracking();
+  const params = { content_type: type, content_id: Number(content.id), category: content.category || 'community', source: content.sourceName || 'community' };
+  trackEvent(`${type}_open`, params);
+  const depths = [25, 50, 75, 90];
+  const sentDepths = new Set();
+  let visibleSince = document.hidden ? 0 : Date.now();
+  let visibleMs = 0;
+  let readSent = false;
+  const updateReadTime = () => { if (!visibleSince) return; visibleMs += Date.now() - visibleSince; visibleSince = Date.now(); if (!readSent && visibleMs >= 30000) { readSent = true; trackEvent(`${type}_read_30s`, params); } };
+  const onVisibility = () => { if (document.hidden) { updateReadTime(); visibleSince = 0; } else visibleSince = Date.now(); };
+  const onScroll = () => { const total = document.documentElement.scrollHeight - window.innerHeight; if (total <= 0) return; const depth = Math.round((window.scrollY / total) * 100); depths.forEach((threshold) => { if (depth >= threshold && !sentDepths.has(threshold)) { sentDepths.add(threshold); trackEvent(`${type}_scroll_${threshold}`, params); } }); };
+  const timer = window.setInterval(updateReadTime, 5000);
+  document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+  stopContentTracking = () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisibility); window.removeEventListener('scroll', onScroll); updateReadTime(); };
+}
+function trackMutation(path, method) {
+  if (method !== 'POST' && method !== 'PUT') return;
+  const commentMatch = path.match(/^\/api\/(articles|posts)\/\d+\/comments$/);
+  if (commentMatch) return trackEvent(`${commentMatch[1] === 'articles' ? 'article' : 'post'}_comment_publish`);
+  if (path === '/api/auth/login') return trackEvent('auth_login');
+  if (path === '/api/auth/register') return trackEvent('auth_register');
+  if (path === '/api/preferences') return trackEvent('settings_save');
+  if (path === '/api/refresh') return trackEvent('feed_refresh');
+  if (path === '/api/posts' && method === 'POST') return trackEvent('post_publish');
+  if (/^\/api\/posts\/\d+\/polls\/[^/]+\/vote$/.test(path)) return trackEvent('poll_vote');
+  if (path === '/api/profile') return trackEvent('profile_save');
+}
+
 async function request(path, options = {}) {
   const response = await fetch(path, { headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || 'Не удалось выполнить запрос.');
+  trackMutation(path, options.method || 'GET');
   return payload;
 }
 function relativeDate(value) {
@@ -77,7 +112,7 @@ function openSettings() {
 async function logout() { await request('/api/auth/logout', { method: 'POST' }); state.user = null; state.preferences = { topics: [], sources: [], language: 'ru' }; renderProfile(); if (location.pathname !== '/') { location.href = '/'; return; } loadFeed(); }
 
 function syncTopicControls() { document.querySelectorAll('[data-topic]').forEach((item) => item.classList.toggle('active', item.dataset.topic === state.topic)); }
-function selectTopic(topic) { state.topic = topic; syncTopicControls(); if (!$('#articleList')) { location.href = `/?topic=${encodeURIComponent(topic)}`; return; } history.replaceState(null, '', topic === 'all' ? '/' : `/?topic=${encodeURIComponent(topic)}`); loadFeed(); }
+function selectTopic(topic) { trackEvent('feed_topic_select', { topic }); state.topic = topic; syncTopicControls(); if (!$('#articleList')) { location.href = `/?topic=${encodeURIComponent(topic)}`; return; } history.replaceState(null, '', topic === 'all' ? '/' : `/?topic=${encodeURIComponent(topic)}`); loadFeed(); }
 document.querySelectorAll('[data-topic]').forEach((button) => button.addEventListener('click', () => selectTopic(button.dataset.topic)));
 $('#themeToggle').addEventListener('click', () => document.body.classList.toggle('dark'));
 $('#sidebarTheme').addEventListener('click', () => document.body.classList.toggle('dark'));
@@ -120,6 +155,7 @@ function bindComments(contentType, contentId) {
 }
 async function renderArticlePage(articleId) {
   const { article } = await request(`/api/articles/${articleId}`);
+  trackContentReading('article', article);
   const paragraphs = article.content.split(/\n\n+/).filter(Boolean).map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join('');
   const content = article.markup || paragraphs;
   let replyTo = null;
@@ -151,6 +187,7 @@ function postBlockMarkup(block, post) {
 }
 async function renderPostPage(postId) {
   const { post } = await request(`/api/posts/${postId}`);
+  trackContentReading('post', post);
   $('main').innerHTML = `<article class="reader user-post"><a class="reader-back" href="/">← Вернуться к ленте</a><div class="reader-meta"><span class="tag tools">Авторская статья</span><a class="profile-link" href="/profile/${post.authorId}">${escapeHtml(post.author)}</a><span>${relativeDate(post.publishedAt)}</span></div><h1>${escapeHtml(post.title)}</h1><div class="reader-content post-content" id="postBlocks">${post.blocks.map((block) => postBlockMarkup(block, post)).join('')}</div>${commentsSection()}</article>`;
   $('#postBlocks').addEventListener('click', async (event) => { const option = event.target.closest('.poll-option'); if (!option) return; if (!state.user) return openAuth(true); const pollId = option.closest('.post-poll').dataset.pollId; try { await request(`/api/posts/${post.id}/polls/${pollId}/vote`, { method: 'POST', body: JSON.stringify({ optionIndex: Number(option.dataset.optionIndex) }) }); await renderPostPage(post.id); } catch (error) { alert(error.message); } });
   bindComments('posts', post.id);
