@@ -353,13 +353,60 @@ function adminRange(days) {
 }
 function adminChart(title, metric, series, color) {
   const values = series.map((item) => Number(item[metric]) || 0);
-  const max = Math.max(1, ...values);
+  const rawMax = Math.max(1, ...values);
+  const max = rawMax <= 4 ? rawMax : Math.ceil(rawMax / (rawMax < 20 ? 5 : rawMax < 100 ? 10 : 50)) * (rawMax < 20 ? 5 : rawMax < 100 ? 10 : 50);
   const width = 620;
-  const height = 164;
-  const inset = 14;
-  const points = values.map((value, index) => `${inset + (width - inset * 2) * (values.length < 2 ? 0 : index / (values.length - 1))},${height - inset - (height - inset * 2) * value / max}`).join(' ');
+  const height = 196;
+  const plot = { left: 48, right: 14, top: 16, bottom: 35 };
+  const plotWidth = width - plot.left - plot.right;
+  const plotHeight = height - plot.top - plot.bottom;
+  const point = (value, index) => ({ x: plot.left + plotWidth * (values.length < 2 ? 0 : index / (values.length - 1)), y: plot.top + plotHeight * (1 - value / max) });
+  const points = values.map((value, index) => { const valuePoint = point(value, index); return `${valuePoint.x},${valuePoint.y}`; }).join(' ');
   const sum = values.reduce((total, value) => total + value, 0);
-  return `<article class="admin-chart"><header><span>${title}</span><b>${metricCount(sum)}</b></header><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${title}"><path d="M${inset} ${height - inset}H${width - inset}"/><polyline points="${points}" style="--chart-color:${color}"/></svg><footer><span>${series[0]?.date || ''}</span><span>${series.at(-1)?.date || ''}</span></footer></article>`;
+  const ticks = [max, max / 2, 0];
+  const dateIndexes = [...new Set([0, Math.round((series.length - 1) / 2), Math.max(0, series.length - 1)])];
+  const dateLabel = (value) => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' }).format(new Date(`${value}T00:00:00`));
+  return `<article class="admin-chart" data-admin-chart data-chart-metric="${metric}" data-chart-title="${title}"><header><span>${title}</span><b>${metricCount(sum)}</b></header><div class="admin-chart-canvas"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${title}">${ticks.map((tick) => { const y = plot.top + plotHeight * (1 - tick / max); return `<g class="admin-chart-grid"><line x1="${plot.left}" x2="${width - plot.right}" y1="${y}" y2="${y}"/><text x="${plot.left - 8}" y="${y + 3}" text-anchor="end">${metricCount(tick)}</text></g>`; }).join('')}${dateIndexes.map((index) => { const valuePoint = point(values[index], index); return `<text class="admin-chart-date" x="${valuePoint.x}" y="${height - 10}" text-anchor="middle">${dateLabel(series[index]?.date || '')}</text>`; }).join('')}<polyline points="${points}" style="--chart-color:${color}"/><line class="admin-chart-guide" x1="0" x2="0" y1="${plot.top}" y2="${height - plot.bottom}" hidden/><circle class="admin-chart-dot" cx="0" cy="0" r="4" style="--chart-color:${color}" hidden/><rect class="admin-chart-hit" x="${plot.left}" y="${plot.top}" width="${plotWidth}" height="${plotHeight}"/></svg><div class="admin-chart-tooltip" hidden></div></div></article>`;
+}
+function bindAdminCharts(series) {
+  document.querySelectorAll('[data-admin-chart]').forEach((chart) => {
+    const metric = chart.dataset.chartMetric;
+    const title = chart.dataset.chartTitle;
+    const svg = chart.querySelector('svg');
+    const tooltip = chart.querySelector('.admin-chart-tooltip');
+    const guide = chart.querySelector('.admin-chart-guide');
+    const dot = chart.querySelector('.admin-chart-dot');
+    const width = 620;
+    const left = 48;
+    const right = 14;
+    const top = 16;
+    const bottom = 35;
+    const height = 196;
+    const values = series.map((item) => Number(item[metric]) || 0);
+    const rawMax = Math.max(1, ...values);
+    const max = rawMax <= 4 ? rawMax : Math.ceil(rawMax / (rawMax < 20 ? 5 : rawMax < 100 ? 10 : 50)) * (rawMax < 20 ? 5 : rawMax < 100 ? 10 : 50);
+    const setPoint = (index) => {
+      const ratio = values.length < 2 ? 0 : index / (values.length - 1);
+      const x = left + (width - left - right) * ratio;
+      const y = top + (height - top - bottom) * (1 - values[index] / max);
+      guide.setAttribute('x1', x); guide.setAttribute('x2', x); guide.hidden = false;
+      dot.setAttribute('cx', x); dot.setAttribute('cy', y); dot.hidden = false;
+      tooltip.textContent = `${new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(`${series[index].date}T00:00:00`))} · ${title}: ${values[index]}`;
+      const svgBox = svg.getBoundingClientRect();
+      const chartBox = chart.getBoundingClientRect();
+      const tooltipX = svgBox.left - chartBox.left + svgBox.width * x / width;
+      const tooltipY = svgBox.top - chartBox.top + svgBox.height * y / height;
+      tooltip.style.left = `${Math.max(95, Math.min(chart.clientWidth - 95, tooltipX))}px`;
+      tooltip.style.top = `${Math.max(38, Math.min(chart.clientHeight - 28, tooltipY - 12))}px`;
+      tooltip.hidden = false;
+    };
+    svg.addEventListener('pointermove', (event) => {
+      const box = svg.getBoundingClientRect();
+      const raw = ((event.clientX - box.left) / box.width * width - left) / (width - left - right);
+      setPoint(Math.max(0, Math.min(values.length - 1, Math.round(raw * (values.length - 1)))));
+    });
+    svg.addEventListener('pointerleave', () => { tooltip.hidden = true; guide.hidden = true; dot.hidden = true; });
+  });
 }
 async function renderAdminPage(range = adminRange(30), activeTab = 'stats') {
   if (!state.user?.isAdmin) { $('main').innerHTML = '<section class="admin-page"><a class="reader-back" href="/">← Вернуться к ленте</a><h1>Админка</h1><p class="admin-empty">Доступ к этому разделу есть только у администратора.</p></section>'; return; }
@@ -371,6 +418,7 @@ async function renderAdminPage(range = adminRange(30), activeTab = 'stats') {
   const contentRows = contentResult.content.map((item) => `<tr><td><a href="/${item.kind === 'post' ? 'post' : 'article'}/${item.id}">${escapeHtml(item.title)}</a><small>${escapeHtml(item.sourceName)}</small></td><td>${item.kind === 'post' ? 'Статья' : 'Источник'}</td><td>${metricCount(item.viewCount)} · ${metricCount(item.commentCount)}</td><td>${item.isHidden ? '<span class="admin-status admin-status-red">скрыт</span>' : '<span class="admin-status">виден</span>'}</td><td><button class="admin-action" data-admin-content="${item.id}" data-admin-kind="${item.kind}" data-admin-hidden="${!item.isHidden}">${item.isHidden ? 'Показать' : 'Скрыть'}</button></td></tr>`).join('');
   const page = `<section class="admin-page"><a class="reader-back" href="/">← Вернуться к ленте</a><p class="eyebrow">Администрирование</p><h1>Управление supa</h1><nav class="admin-tabs">${tabs.map(([key, title]) => `<button class="${activeTab === key ? 'active' : ''}" data-admin-tab="${key}">${title}</button>`).join('')}</nav><section class="admin-panel ${activeTab === 'stats' ? '' : 'admin-panel-hidden'}"><form id="adminRange" class="admin-range"><label>С<input name="from" type="date" value="${statsResult.from}" /></label><label>По<input name="to" type="date" value="${statsResult.to}" /></label><button>Показать</button><span><button type="button" data-admin-range="7">7 дней</button><button type="button" data-admin-range="30">30 дней</button><button type="button" data-admin-range="90">90 дней</button><button type="button" data-admin-range="365">Год</button></span></form><div class="admin-stat-grid"><article><span>Пользователей</span><strong>${metricCount(totals.users)}</strong><small>за всё время</small></article><article><span>Материалов</span><strong>${metricCount(totals.articles)}</strong><small>видимых</small></article><article><span>Комментариев</span><strong>${metricCount(totals.comments)}</strong><small>за всё время</small></article><article><span>Просмотров</span><strong>${metricCount(totals.views)}</strong><small>на supa</small></article></div><div class="admin-charts">${adminChart('Просмотры', 'views', series, '#8463ef')}${adminChart('Новые статьи', 'articles', series, '#ceaa55')}${adminChart('Комментарии', 'comments', series, '#64bde8')}${adminChart('Регистрации', 'registrations', series, '#a4d850')}</div></section><section class="admin-panel ${activeTab === 'users' ? '' : 'admin-panel-hidden'}"><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Пользователь</th><th>Регистрация</th><th>Статьи / комм.</th><th>Статус</th><th></th></tr></thead><tbody>${userRows}</tbody></table></div></section><section class="admin-panel ${activeTab === 'content' ? '' : 'admin-panel-hidden'}"><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Материал</th><th>Тип</th><th>Просмотры / комм.</th><th>Статус</th><th></th></tr></thead><tbody>${contentRows}</tbody></table></div></section></section>`;
   $('main').innerHTML = page;
+  bindAdminCharts(series);
   $('#adminRange')?.addEventListener('submit', (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); renderAdminPage({ from: form.get('from'), to: form.get('to') }, activeTab); });
   document.querySelectorAll('[data-admin-range]').forEach((button) => button.addEventListener('click', () => renderAdminPage(adminRange(Number(button.dataset.adminRange)), activeTab)));
   document.querySelectorAll('[data-admin-tab]').forEach((button) => button.addEventListener('click', () => renderAdminPage(range, button.dataset.adminTab)));
