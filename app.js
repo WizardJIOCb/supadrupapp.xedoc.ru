@@ -17,9 +17,18 @@ function relativeDate(value) {
   if (hours < 24) return `${hours} ч назад`;
   return `${Math.round(hours / 24)} дн назад`;
 }
+function preciseDate(value) {
+  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'long', timeStyle: 'short' }).format(new Date(value));
+}
+function metricCount(value) {
+  return new Intl.NumberFormat('ru-RU', { notation: 'compact', maximumFractionDigits: 1 }).format(Math.max(0, Number(value) || 0));
+}
 function articleMarkup(article) {
   const ownPost = article.kind === 'post';
-  return `<article class="article-card ${ownPost ? 'author-post-card' : ''}"><a href="${ownPost ? `/post/${article.id}` : `/article/${article.id}`}"><div class="article-top"><span class="tag ${ownPost ? 'tools' : article.category}">${ownPost ? 'Автор' : (labels[article.category] || 'News')}</span><span class="source-dot" style="--accent:${ownPost ? '#8463ef' : escapeHtml(article.accent)}"></span><span>${escapeHtml(ownPost ? article.author : article.sourceName)}</span></div><h3>${escapeHtml(article.title)}</h3><p>${escapeHtml(article.summary || 'Открыть публикацию в источнике.')}</p><div class="article-footer"><span>${relativeDate(article.publishedAt)}</span><span>Читать здесь →</span></div></a></article>`;
+  const date = preciseDate(article.publishedAt);
+  const views = metricCount(article.viewCount);
+  const comments = metricCount(article.commentCount);
+  return `<article class="article-card ${ownPost ? 'author-post-card' : ''}"><a href="${ownPost ? `/post/${article.id}` : `/article/${article.id}`}"><div class="article-top"><span class="tag ${ownPost ? 'tools' : article.category}">${ownPost ? 'Автор' : (labels[article.category] || 'News')}</span><span class="source-dot" style="--accent:${ownPost ? '#8463ef' : escapeHtml(article.accent)}"></span><span>${escapeHtml(ownPost ? article.author : article.sourceName)}</span></div><h3>${escapeHtml(article.title)}</h3><p>${escapeHtml(article.summary || 'Открыть публикацию в источнике.')}</p><div class="article-footer"><div class="article-metrics"><time datetime="${escapeHtml(article.publishedAt)}" title="${escapeHtml(date)}">${relativeDate(article.publishedAt)}</time><span class="article-metric" aria-label="Просмотров: ${views}" title="Просмотров"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>${views}</span><span class="article-metric" aria-label="Комментариев: ${comments}" title="Комментариев"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v10H9l-5 3v-13Z"/></svg>${comments}</span></div><span>Читать здесь →</span></div></a></article>`;
 }
 async function loadFeed() {
   const query = state.topic === 'all' ? '' : `?topic=${state.topic}`;
@@ -118,9 +127,9 @@ async function renderArticlePage(articleId) {
   $('#cancelReply')?.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); clearReply(); });
   $('#commentForm')?.addEventListener('click', (event) => { if (event.target.closest('#cancelReply')) { event.preventDefault(); clearReply(); } });
   $('#commentsList').addEventListener('click', (event) => { const button = event.target.closest('.reply-button'); if (!button) return; if (!state.user) return openAuth(true); replyTo = { id: Number(button.dataset.replyId), author: button.dataset.replyAuthor }; $('#commentReplyLabel').textContent = `Ответ для ${replyTo.author}`; $('#commentReplyTarget').hidden = false; $('#commentForm textarea').focus(); });
-  $('#commentForm')?.addEventListener('submit', async (event) => { event.preventDefault(); const textarea = event.currentTarget.elements.body; const button = event.currentTarget.querySelector('button[type="submit"], button:not([type])'); button.disabled = true; try { await request(`/api/articles/${articleId}/comments`, { method: 'POST', body: JSON.stringify({ body: textarea.value, parentId: replyTo?.id || null }) }); textarea.value = ''; clearReply(); await loadComments(articleId); } catch (error) { textarea.setCustomValidity(error.message); textarea.reportValidity(); textarea.setCustomValidity(''); } finally { button.disabled = false; } });
+  $('#commentForm')?.addEventListener('submit', async (event) => { event.preventDefault(); const textarea = event.currentTarget.elements.body; const button = event.currentTarget.querySelector('button[type="submit"], button:not([type])'); button.disabled = true; try { await request(`/api/articles/${articleId}/comments`, { method: 'POST', body: JSON.stringify({ body: textarea.value, parentId: replyTo?.id || null }) }); textarea.value = ''; clearReply(); await loadComments('articles', articleId); } catch (error) { textarea.setCustomValidity(error.message); textarea.reportValidity(); textarea.setCustomValidity(''); } finally { button.disabled = false; } });
   $('#commentForm textarea')?.addEventListener('keydown', (event) => { if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); $('#commentForm').requestSubmit(); } });
-  await loadComments(articleId);
+  await loadComments('articles', articleId);
 }
 function postTextMarkup(text = '') {
   return escapeHtml(String(text)).replace(/https?:\/\/[^\s<]+/g, (value) => {

@@ -19,7 +19,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS sources (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, feed_url TEXT NOT NULL UNIQUE, accent TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
-  CREATE TABLE IF NOT EXISTS articles (id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES sources(id), external_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, url TEXT NOT NULL, summary TEXT, category TEXT NOT NULL, published_at TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE TABLE IF NOT EXISTS articles (id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES sources(id), external_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, url TEXT NOT NULL, summary TEXT, category TEXT NOT NULL, published_at TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, view_count INTEGER NOT NULL DEFAULT 0);
   CREATE INDEX IF NOT EXISTS articles_published_idx ON articles(published_at DESC);
   CREATE TABLE IF NOT EXISTS user_topics (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, topic TEXT NOT NULL, PRIMARY KEY (user_id, topic));
   CREATE TABLE IF NOT EXISTS user_sources (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (user_id, source_id));
@@ -30,7 +30,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS user_profiles (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, display_name TEXT NOT NULL, bio TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '');
   CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id INTEGER, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE INDEX IF NOT EXISTS comments_article_idx ON comments(article_id, created_at DESC);
-  CREATE TABLE IF NOT EXISTS user_posts (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, blocks_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, published_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE TABLE IF NOT EXISTS user_posts (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, blocks_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, published_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, view_count INTEGER NOT NULL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS post_votes (post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE, poll_id TEXT NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, option_index INTEGER NOT NULL, PRIMARY KEY (post_id, poll_id, user_id));
   CREATE INDEX IF NOT EXISTS user_posts_published_idx ON user_posts(published_at DESC);
   CREATE TABLE IF NOT EXISTS post_comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id INTEGER, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -39,6 +39,8 @@ db.exec(`
 if (!db.prepare("SELECT name FROM pragma_table_info('comments') WHERE name = 'parent_id'").get()) db.exec('ALTER TABLE comments ADD COLUMN parent_id INTEGER');
 if (!db.prepare("SELECT name FROM pragma_table_info('user_profiles') WHERE name = 'bio'").get()) db.exec("ALTER TABLE user_profiles ADD COLUMN bio TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("SELECT name FROM pragma_table_info('user_profiles') WHERE name = 'avatar_url'").get()) db.exec("ALTER TABLE user_profiles ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''");
+if (!db.prepare("SELECT name FROM pragma_table_info('articles') WHERE name = 'view_count'").get()) db.exec('ALTER TABLE articles ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0');
+if (!db.prepare("SELECT name FROM pragma_table_info('user_posts') WHERE name = 'view_count'").get()) db.exec('ALTER TABLE user_posts ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0');
 
 const SOURCE_SEED = [
   ['OpenAI', 'https://openai.com/news/', 'https://openai.com/news/rss.xml', '#cefa62'],
@@ -262,7 +264,7 @@ async function translateLongText(content, language) {
   return translated.join('\n\n');
 }
 async function articlePage(user, articleId) {
-  const article = db.prepare('SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE articles.id = ?').get(articleId);
+  const article = db.prepare('SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE articles.id = ?').get(articleId);
   if (!article) return null;
   const language = user ? preferences(user.id).language : 'ru';
   const original = await loadOriginalPage(article);
@@ -324,7 +326,8 @@ function safeBlocks(rawBlocks) {
 }
 function postRow(post) { return { ...post, blocks: JSON.parse(post.blocksJson), kind: 'post' }; }
 function postsForFeed() {
-  return db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt,
+  return db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt, user_posts.view_count AS viewCount,
+    (SELECT COUNT(*) FROM post_comments WHERE post_comments.post_id = user_posts.id) AS commentCount,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
     FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id ORDER BY datetime(user_posts.published_at) DESC LIMIT 20`).all().map(postRow);
 }
@@ -337,7 +340,7 @@ function pollResults(postId, blocks, userId) {
   }, {});
 }
 function postById(postId, user) {
-  const post = db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt,
+  const post = db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt, user_posts.view_count AS viewCount,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
     FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE user_posts.id = ?`).get(postId);
   if (!post) return null;
@@ -363,7 +366,9 @@ async function feed(user, topic) {
   const selected = user ? preferences(user.id) : { topics: [], sources: [], language: 'ru' };
   const topics = topic && TOPICS.includes(topic) ? [topic] : selected.topics;
   const disabledSources = selected.sources.filter((row) => !row.enabled).map((row) => row.sourceId);
-  let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE 1=1`;
+  let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount,
+    (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id) AS commentCount,
+    sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE 1=1`;
   const params = [];
   if (topics.length) { query += ` AND articles.category IN (${topics.map(() => '?').join(',')})`; params.push(...topics); }
   if (disabledSources.length) { query += ` AND articles.source_id NOT IN (${disabledSources.map(() => '?').join(',')})`; params.push(...disabledSources); }
@@ -428,7 +433,9 @@ async function api(request, response, url) {
   }
   const postMatch = url.pathname.match(/^\/api\/posts\/(\d+)$/);
   if (request.method === 'GET' && postMatch) {
-    const post = postById(Number(postMatch[1]), user);
+    const postId = Number(postMatch[1]);
+    db.prepare('UPDATE user_posts SET view_count = view_count + 1 WHERE id = ?').run(postId);
+    const post = postById(postId, user);
     return post ? json(response, 200, { post }) : json(response, 404, { error: 'Публикация не найдена.' });
   }
   const voteMatch = url.pathname.match(/^\/api\/posts\/(\d+)\/polls\/([a-zA-Z0-9-]+)\/vote$/);
@@ -476,7 +483,9 @@ async function api(request, response, url) {
   }
   const articleMatch = url.pathname.match(/^\/api\/articles\/(\d+)$/);
   if (request.method === 'GET' && articleMatch) {
-    const article = await articlePage(user, Number(articleMatch[1]));
+    const articleId = Number(articleMatch[1]);
+    db.prepare('UPDATE articles SET view_count = view_count + 1 WHERE id = ?').run(articleId);
+    const article = await articlePage(user, articleId);
     return article ? json(response, 200, { article }) : json(response, 404, { error: 'Статья не найдена.' });
   }
   if (request.method === 'POST' && url.pathname === '/api/refresh') {

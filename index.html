@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/styles.css?v=6" />
+    <link rel="stylesheet" href="/styles.css?v=7" />
     <link rel="stylesheet" href="/reader.css?v=4" />
     <link rel="stylesheet" href="/layout.css" />
     <link rel="stylesheet" href="/community.css" />
@@ -86,6 +86,6 @@
 
     <dialog id="authDialog" class="auth-dialog"><button class="dialog-close" data-close="authDialog" aria-label="Закрыть">×</button><div class="auth-mark"><span></span><span></span><span></span></div><p class="eyebrow">Личный аккаунт</p><h2 id="authTitle">Войти в поток</h2><p id="authText">Сохраните темы и источники, чтобы лента подстраивалась под вас.</p><form id="authForm"><label class="name-field">Имя для комментариев<input name="displayName" type="text" autocomplete="name" maxlength="60" placeholder="Как вас показывать" /></label><label>Email<input name="email" type="email" autocomplete="email" required placeholder="you@example.com" /></label><label>Пароль<input name="password" type="password" autocomplete="current-password" required minlength="8" placeholder="Не менее 8 символов" /></label><button>Войти</button></form><button class="form-switch" id="authSwitch">Нет аккаунта? Создать</button><small class="form-message" id="authMessage"></small></dialog>
     <dialog id="settingsDialog"><button class="dialog-close" data-close="settingsDialog" aria-label="Закрыть">×</button><p class="eyebrow">Персональная настройка</p><h2>Что вам интересно?</h2><p>Выберите язык, темы и источники — лента обновится сразу.</p><form id="settingsForm"><fieldset><legend>Язык материалов</legend><div class="check-grid language-grid"><label class="check"><input type="radio" name="language" value="ru" checked /><span>Русский</span></label><label class="check"><input type="radio" name="language" value="en" /><span>English</span></label></div></fieldset><fieldset><legend>Темы</legend><div class="check-grid" id="topicSettings"></div></fieldset><fieldset><legend>Источники</legend><div class="check-grid sources-checks" id="sourceSettings"></div></fieldset><button>Сохранить настройки</button></form><small class="form-message" id="settingsMessage"></small></dialog>
-    <script src="/app.js?v=7"></script>
+    <script src="/app.js?v=8"></script>
   </body>
 </html>
