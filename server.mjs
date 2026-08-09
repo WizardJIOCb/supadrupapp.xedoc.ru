@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { mkdirSync, existsSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
@@ -11,6 +11,8 @@ const port = Number(process.env.PORT || 3110);
 const dataDir = process.env.DATA_DIR || join(process.cwd(), 'data');
 const staticDir = process.env.STATIC_DIR || process.cwd();
 mkdirSync(dataDir, { recursive: true });
+const uploadsDir = join(dataDir, 'uploads');
+mkdirSync(uploadsDir, { recursive: true });
 const db = new DatabaseSync(join(dataDir, 'news.db'));
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 db.exec(`
@@ -28,6 +30,9 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS user_profiles (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, display_name TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id INTEGER, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE INDEX IF NOT EXISTS comments_article_idx ON comments(article_id, created_at DESC);
+  CREATE TABLE IF NOT EXISTS user_posts (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, blocks_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, published_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE TABLE IF NOT EXISTS post_votes (post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE, poll_id TEXT NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, option_index INTEGER NOT NULL, PRIMARY KEY (post_id, poll_id, user_id));
+  CREATE INDEX IF NOT EXISTS user_posts_published_idx ON user_posts(published_at DESC);
 `);
 if (!db.prepare("SELECT name FROM pragma_table_info('comments') WHERE name = 'parent_id'").get()) db.exec('ALTER TABLE comments ADD COLUMN parent_id INTEGER');
 
@@ -114,7 +119,7 @@ function json(response, status, body, headers = {}) {
 function badRequest(response, message) { json(response, 400, { error: message }); }
 async function body(request) {
   let raw = '';
-  for await (const chunk of request) { raw += chunk; if (raw.length > 100000) throw new Error('Request too large'); }
+  for await (const chunk of request) { raw += chunk; if (raw.length > 7000000) throw new Error('Request too large'); }
   try { return raw ? JSON.parse(raw) : {}; } catch { throw new Error('Invalid JSON'); }
 }
 function sessionCookie(token, maxAge = 60 * 60 * 24 * 30) {
@@ -263,6 +268,52 @@ function commentsFor(articleId) {
   comments.forEach((comment) => { const parent = comment.parentId ? byId.get(comment.parentId) : null; (parent ? parent.replies : roots).push(comment); });
   return roots;
 }
+function safeBlocks(rawBlocks) {
+  if (!Array.isArray(rawBlocks) || rawBlocks.length < 1 || rawBlocks.length > 60) throw new Error('Добавьте от 1 до 60 блоков.');
+  return rawBlocks.map((block) => {
+    const type = String(block?.type || '');
+    if (['paragraph', 'heading', 'quote'].includes(type)) {
+      const text = String(block.text || '').trim();
+      if (!text || text.length > 5000) throw new Error('Текстовый блок должен содержать до 5000 символов.');
+      return { type, text };
+    }
+    if (type === 'divider') return { type };
+    if (type === 'image') {
+      const url = String(block.url || '');
+      if (!/^https:\/\//.test(url) && !/^\/api\/uploads\/[a-z0-9-]+\.(png|jpg|webp)$/i.test(url)) throw new Error('Для картинки укажите корректный URL или загрузите файл.');
+      return { type, url, caption: String(block.caption || '').trim().slice(0, 500) };
+    }
+    if (type === 'poll') {
+      const question = String(block.question || '').trim().slice(0, 400);
+      const options = Array.isArray(block.options) ? block.options.map((option) => String(option || '').trim().slice(0, 160)).filter(Boolean).slice(0, 6) : [];
+      if (!question || options.length < 2) throw new Error('В опросе нужны вопрос и минимум два варианта.');
+      return { type, id: String(block.id || randomBytes(8).toString('hex')).replace(/[^a-zA-Z0-9-]/g, '').slice(0, 40), question, options };
+    }
+    throw new Error('Неизвестный тип блока.');
+  });
+}
+function postRow(post) { return { ...post, blocks: JSON.parse(post.blocksJson), kind: 'post' }; }
+function postsForFeed() {
+  return db.prepare(`SELECT user_posts.id, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt,
+    COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
+    FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id ORDER BY datetime(user_posts.published_at) DESC LIMIT 20`).all().map(postRow);
+}
+function pollResults(postId, blocks, userId) {
+  const votes = db.prepare('SELECT poll_id AS pollId, option_index AS optionIndex, COUNT(*) AS count FROM post_votes WHERE post_id = ? GROUP BY poll_id, option_index').all(postId);
+  const ownVotes = userId ? db.prepare('SELECT poll_id AS pollId, option_index AS optionIndex FROM post_votes WHERE post_id = ? AND user_id = ?').all(postId, userId) : [];
+  return blocks.filter((block) => block.type === 'poll').reduce((result, poll) => {
+    result[poll.id] = { counts: poll.options.map((_, index) => votes.find((vote) => vote.pollId === poll.id && vote.optionIndex === index)?.count || 0), selected: ownVotes.find((vote) => vote.pollId === poll.id)?.optionIndex ?? null };
+    return result;
+  }, {});
+}
+function postById(postId, user) {
+  const post = db.prepare(`SELECT user_posts.id, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt,
+    COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
+    FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE user_posts.id = ?`).get(postId);
+  if (!post) return null;
+  const result = postRow(post);
+  return { ...result, polls: pollResults(result.id, result.blocks, user?.id) };
+}
 async function feed(user, topic) {
   const selected = user ? preferences(user.id) : { topics: [], sources: [], language: 'ru' };
   const topics = topic && TOPICS.includes(topic) ? [topic] : selected.topics;
@@ -280,6 +331,54 @@ async function api(request, response, url) {
   if (request.method === 'GET' && url.pathname === '/api/health') return json(response, 200, { ok: true });
   if (request.method === 'GET' && url.pathname === '/api/me') return json(response, 200, { user, preferences: user ? preferences(user.id) : null });
   if (request.method === 'GET' && url.pathname === '/api/sources') return json(response, 200, { sources: db.prepare('SELECT id, name, url, accent FROM sources WHERE enabled = 1 ORDER BY id').all() });
+  const uploadMatch = url.pathname.match(/^\/api\/uploads\/([a-z0-9-]+\.(?:png|jpg|webp))$/i);
+  if (request.method === 'GET' && uploadMatch) {
+    try {
+      const file = await readFile(join(uploadsDir, uploadMatch[1]));
+      const extension = extname(uploadMatch[1]);
+      response.writeHead(200, { 'Content-Type': { '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp' }[extension], 'Cache-Control': 'public, max-age=31536000, immutable' });
+      return response.end(file);
+    } catch { response.writeHead(404); return response.end('Not found'); }
+  }
+  if (request.method === 'POST' && url.pathname === '/api/uploads') {
+    if (!user) return json(response, 401, { error: 'Войдите, чтобы загружать изображения.' });
+    const { dataUrl = '' } = await body(request);
+    const match = String(dataUrl).match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/);
+    if (!match) return badRequest(response, 'Поддерживаются PNG, JPEG и WebP.');
+    const file = Buffer.from(match[2], 'base64');
+    if (!file.length || file.length > 5000000) return badRequest(response, 'Размер изображения должен быть до 5 МБ.');
+    const extension = match[1] === 'jpeg' ? 'jpg' : match[1];
+    const filename = `${randomBytes(12).toString('hex')}.${extension}`;
+    await writeFile(join(uploadsDir, filename), file);
+    return json(response, 201, { url: `/api/uploads/${filename}` });
+  }
+  if (request.method === 'GET' && url.pathname === '/api/posts') return json(response, 200, { posts: postsForFeed() });
+  if (request.method === 'POST' && url.pathname === '/api/posts') {
+    if (!user) return json(response, 401, { error: 'Войдите, чтобы опубликовать статью.' });
+    const { title = '', blocks = [] } = await body(request);
+    const normalizedTitle = String(title).trim().slice(0, 240);
+    if (normalizedTitle.length < 5) return badRequest(response, 'Заголовок должен содержать не менее 5 символов.');
+    let safe;
+    try { safe = safeBlocks(blocks); } catch (error) { return badRequest(response, error.message); }
+    const result = db.prepare('INSERT INTO user_posts (user_id, title, blocks_json) VALUES (?, ?, ?)').run(user.id, normalizedTitle, JSON.stringify(safe));
+    return json(response, 201, { post: postById(Number(result.lastInsertRowid), user) });
+  }
+  const postMatch = url.pathname.match(/^\/api\/posts\/(\d+)$/);
+  if (request.method === 'GET' && postMatch) {
+    const post = postById(Number(postMatch[1]), user);
+    return post ? json(response, 200, { post }) : json(response, 404, { error: 'Публикация не найдена.' });
+  }
+  const voteMatch = url.pathname.match(/^\/api\/posts\/(\d+)\/polls\/([a-zA-Z0-9-]+)\/vote$/);
+  if (request.method === 'POST' && voteMatch) {
+    if (!user) return json(response, 401, { error: 'Войдите, чтобы голосовать.' });
+    const post = postById(Number(voteMatch[1]), user);
+    if (!post) return json(response, 404, { error: 'Публикация не найдена.' });
+    const poll = post.blocks.find((block) => block.type === 'poll' && block.id === voteMatch[2]);
+    const { optionIndex } = await body(request);
+    if (!poll || !Number.isInteger(optionIndex) || optionIndex < 0 || optionIndex >= poll.options.length) return badRequest(response, 'Вариант ответа не найден.');
+    db.prepare('INSERT INTO post_votes (post_id, poll_id, user_id, option_index) VALUES (?, ?, ?, ?) ON CONFLICT(post_id, poll_id, user_id) DO UPDATE SET option_index = excluded.option_index').run(post.id, poll.id, user.id, optionIndex);
+    return json(response, 200, { post: postById(post.id, user) });
+  }
   if (request.method === 'GET' && url.pathname === '/api/feed') {
     const result = await feed(user, url.searchParams.get('topic'));
     return json(response, 200, { ...result, personalized: Boolean(user) });
@@ -353,7 +452,7 @@ async function api(request, response, url) {
 }
 async function staticFile(request, response, path) {
   const requested = path === '/' ? 'index.html' : path.slice(1);
-  if (!['index.html', 'styles.css', 'reader.css', 'layout.css', 'community.css', 'replies.css', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
+  if (!['index.html', 'styles.css', 'reader.css', 'layout.css', 'community.css', 'replies.css', 'publisher.css', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
   try {
     const file = await readFile(join(staticDir, requested));
     const type = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'application/javascript; charset=utf-8' }[extname(requested)];
