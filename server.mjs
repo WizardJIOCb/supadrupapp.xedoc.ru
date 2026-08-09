@@ -174,10 +174,12 @@ async function translateArticles(articles, language) {
   return articles.map((article) => result.find((translated) => translated.id === article.id) || article);
 }
 function extractPageContent(html) {
-  const article = html.match(/<article(?:\s[^>]*)?>([\s\S]*?)<\/article>/i)?.[1] || html.match(/<main(?:\s[^>]*)?>([\s\S]*?)<\/main>/i)?.[1] || html.match(/<body(?:\s[^>]*)?>([\s\S]*?)<\/body>/i)?.[1] || html;
-  const withoutChrome = article.replace(/<(script|style|svg|nav|header|footer|aside|form|noscript)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
-  const withBreaks = withoutChrome.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|h1|h2|h3|h4|li|blockquote|pre|div|section)>/gi, '\n\n');
-  return decodeEntities(withBreaks.replace(/<[^>]+>/g, ' ')).split(/\n\s*\n/).map((part) => part.replace(/\s+/g, ' ').trim()).filter((part) => part.length > 35).slice(0, 220).join('\n\n').slice(0, 100000);
+  const candidates = [html.match(/<article(?:\s[^>]*)?>([\s\S]*?)<\/article>/i)?.[1], html.match(/<main(?:\s[^>]*)?>([\s\S]*?)<\/main>/i)?.[1], html.match(/<body(?:\s[^>]*)?>([\s\S]*?)<\/body>/i)?.[1], html].filter(Boolean);
+  return candidates.map((candidate) => {
+    const withoutChrome = candidate.replace(/<(script|style|svg|nav|header|footer|aside|form|noscript)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+    const withBreaks = withoutChrome.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|h1|h2|h3|h4|li|blockquote|pre|div|section)>/gi, '\n\n');
+    return decodeEntities(withBreaks.replace(/<[^>]+>/g, ' ')).split(/\n\s*\n/).map((part) => part.replace(/\s+/g, ' ').trim()).filter((part) => part.length > 35).slice(0, 220).join('\n\n').slice(0, 100000);
+  }).sort((left, right) => right.length - left.length)[0] || '';
 }
 function pageTitleFromHtml(html, fallback) {
   const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1];
@@ -185,7 +187,7 @@ function pageTitleFromHtml(html, fallback) {
 }
 async function loadOriginalPage(article) {
   const cached = db.prepare('SELECT original_title AS title, original_content AS content FROM article_pages WHERE article_id = ?').get(article.id);
-  if (cached) return cached;
+  if (cached?.content.length >= 200) return cached;
   const destination = new URL(article.url);
   if (destination.protocol !== 'https:') throw new Error('Статья доступна только по HTTPS.');
   const response = await fetch(destination, { headers: { 'User-Agent': 'signal-ai-news/1.0 (+https://supadrupapp.xedoc.ru)' }, signal: AbortSignal.timeout(20000) });
@@ -231,7 +233,7 @@ async function articlePage(user, articleId) {
   const original = await loadOriginalPage(article);
   if (language === 'en') return { ...article, ...original, language, originalUrl: article.url };
   const cached = db.prepare('SELECT title, content FROM article_page_translations WHERE article_id = ? AND language = ?').get(article.id, language);
-  if (cached) return { ...article, title: cached.title, content: cached.content, language, originalUrl: article.url };
+  if (cached?.content.length >= 200) return { ...article, title: cached.title, content: cached.content, language, originalUrl: article.url };
   try {
     const [title, content] = await Promise.all([translateText(original.title, language), translateLongText(original.content, language)]);
     db.prepare('INSERT OR REPLACE INTO article_page_translations (article_id, language, title, content) VALUES (?, ?, ?, ?)').run(article.id, language, title, content);
