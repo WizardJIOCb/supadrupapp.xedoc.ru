@@ -117,13 +117,20 @@ async function renderArticlePage(articleId) {
   $('#commentForm textarea')?.addEventListener('keydown', (event) => { if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); $('#commentForm').requestSubmit(); } });
   await loadComments(articleId);
 }
+function postTextMarkup(text = '') {
+  return escapeHtml(String(text)).replace(/https?:\/\/[^\s<]+/g, (value) => {
+    const suffix = value.match(/[),.;!?]+$/)?.[0] || '';
+    const url = suffix ? value.slice(0, -suffix.length) : value;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>${suffix}`;
+  }).replace(/\n/g, '<br />');
+}
 function postBlockMarkup(block, post) {
-  if (block.type === 'heading') return `<h2>${escapeHtml(block.text)}</h2>`;
-  if (block.type === 'quote') return `<blockquote>${escapeHtml(block.text)}</blockquote>`;
+  if (block.type === 'heading') return `<h2>${postTextMarkup(block.text)}</h2>`;
+  if (block.type === 'quote') return `<blockquote>${postTextMarkup(block.text)}</blockquote>`;
   if (block.type === 'divider') return '<hr />';
   if (block.type === 'image') return `<figure><img src="${escapeHtml(block.url)}" alt="${escapeHtml(block.caption || '')}" />${block.caption ? `<figcaption>${escapeHtml(block.caption)}</figcaption>` : ''}</figure>`;
   if (block.type === 'poll') { const poll = post.polls[block.id] || { counts: [], selected: null }; const total = poll.counts.reduce((sum, count) => sum + count, 0); return `<section class="post-poll" data-poll-id="${escapeHtml(block.id)}"><h3>${escapeHtml(block.question)}</h3><div>${block.options.map((option, index) => `<button class="poll-option ${poll.selected === index ? 'selected' : ''}" data-option-index="${index}"><span>${escapeHtml(option)}</span><b>${total ? Math.round((poll.counts[index] || 0) / total * 100) : 0}%</b></button>`).join('')}</div><small>${total} голос${total === 1 ? '' : total < 5 ? 'а' : 'ов'}</small></section>`; }
-  return `<p>${escapeHtml(block.text)}</p>`;
+  return `<p>${postTextMarkup(block.text)}</p>`;
 }
 async function renderPostPage(postId) {
   const { post } = await request(`/api/posts/${postId}`);
