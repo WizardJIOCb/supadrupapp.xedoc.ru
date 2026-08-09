@@ -6,3 +6,4 @@
 @media(min-width:1500px){.left-sidebar{left:calc(50% - 650px)}.topbar{padding-left:calc(50% - 650px);padding-right:calc(50% - 650px)}main{max-width:1300px;margin-left:auto;margin-right:auto;padding-left:300px;padding-right:0}main>.hero,main>.topics,main>.dashboard-strip,main>.content-grid{max-width:none}footer{max-width:1300px;margin-left:auto;margin-right:auto;padding-left:300px;padding-right:0}}
 .left-sidebar{z-index:5}
 .sidebar-secondary .active{background:#fffefa;color:var(--violet)}body.dark .sidebar-secondary .active{background:#292925}
+.sidebar-secondary a[hidden]{display:none!important}
