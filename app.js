@@ -169,6 +169,23 @@ $('#accountButton').addEventListener('click', () => state.user ? openSettings() 
 $('#setupButton').addEventListener('click', openSettings); $('#sourcesSetup').addEventListener('click', openSettings);
 $('#sourceFeedReset').addEventListener('click', () => selectSource(null));
 document.querySelectorAll('[data-best-period]').forEach((button) => button.addEventListener('click', () => selectBest(button.dataset.bestPeriod)));
+function openImageViewer(image) {
+  const dialog = $('#imageDialog');
+  const target = $('#imageDialogImage');
+  const source = image.currentSrc || image.src;
+  if (!dialog || !target || !source) return;
+  target.src = source;
+  target.alt = image.alt || 'Изображение из статьи';
+  if (!dialog.open) dialog.showModal();
+  trackEvent('article_image_open', { source: location.pathname.startsWith('/post/') ? 'community' : 'article' });
+}
+document.addEventListener('click', (event) => {
+  const image = event.target.closest('.reader-content img');
+  if (!image) return;
+  event.preventDefault();
+  openImageViewer(image);
+});
+$('#imageDialogClose').addEventListener('click', () => $('#imageDialog').close());
 $('#profileLogin')?.addEventListener('click', () => openAuth(false));
 $('#authSwitch').addEventListener('click', () => openAuth(!state.isLogin));
 document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => $(`#${button.dataset.close}`).close()));
