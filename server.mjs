@@ -786,7 +786,7 @@ async function api(request, response, url) {
   return json(response, 404, { error: 'Не найдено.' });
 }
 async function staticFile(request, response, path) {
-  const requested = path === '/' || path === '/write' || /^(\/article|\/post|\/profile)\/\d+$/.test(path) ? 'index.html' : path.slice(1);
+  const requested = path === '/' || path === '/write' || path === '/about' || /^(\/article|\/post|\/profile)\/\d+$/.test(path) ? 'index.html' : path.slice(1);
   if (!['index.html', 'styles.css', 'reader.css', 'layout.css', 'community.css', 'replies.css', 'publisher.css', 'branding.css', 'sidebar.css', 'favicon.svg', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
   try {
     const file = await readFile(join(staticDir, requested));
