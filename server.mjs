@@ -14,6 +14,7 @@ mkdirSync(dataDir, { recursive: true });
 const uploadsDir = join(dataDir, 'uploads');
 mkdirSync(uploadsDir, { recursive: true });
 const db = new DatabaseSync(join(dataDir, 'news.db'));
+const TRANSLATION_CACHE_VERSION = 2;
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, is_admin INTEGER NOT NULL DEFAULT 0, is_moderator INTEGER NOT NULL DEFAULT 0, is_banned INTEGER NOT NULL DEFAULT 0);
@@ -24,7 +25,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS user_topics (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, topic TEXT NOT NULL, PRIMARY KEY (user_id, topic));
   CREATE TABLE IF NOT EXISTS user_sources (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (user_id, source_id));
   CREATE TABLE IF NOT EXISTS user_settings (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, language TEXT NOT NULL DEFAULT 'ru' CHECK(language IN ('ru', 'en')));
-  CREATE TABLE IF NOT EXISTS translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, summary TEXT, PRIMARY KEY (article_id, language));
+  CREATE TABLE IF NOT EXISTS translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, summary TEXT, version INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (article_id, language));
   CREATE TABLE IF NOT EXISTS article_pages (article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE, original_title TEXT NOT NULL, original_content TEXT NOT NULL, original_markup TEXT NOT NULL DEFAULT '', original_markup_version INTEGER NOT NULL DEFAULT 1, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS article_page_translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY (article_id, language));
   CREATE TABLE IF NOT EXISTS user_profiles (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, display_name TEXT NOT NULL, bio TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '');
@@ -47,6 +48,7 @@ if (!db.prepare("SELECT name FROM pragma_table_info('user_posts') WHERE name = '
 if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup'").get()) db.exec("ALTER TABLE article_pages ADD COLUMN original_markup TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup_version'").get()) db.exec('ALTER TABLE article_pages ADD COLUMN original_markup_version INTEGER NOT NULL DEFAULT 1');
 if (!db.prepare("SELECT name FROM pragma_table_info('article_page_translations') WHERE name = 'markup'").get()) db.exec("ALTER TABLE article_page_translations ADD COLUMN markup TEXT NOT NULL DEFAULT ''");
+if (!db.prepare("SELECT name FROM pragma_table_info('translations') WHERE name = 'version'").get()) db.exec('ALTER TABLE translations ADD COLUMN version INTEGER NOT NULL DEFAULT 1');
 if (!db.prepare("SELECT name FROM pragma_table_info('users') WHERE name = 'is_admin'").get()) db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0');
 if (!db.prepare("SELECT name FROM pragma_table_info('users') WHERE name = 'is_moderator'").get()) db.exec('ALTER TABLE users ADD COLUMN is_moderator INTEGER NOT NULL DEFAULT 0');
 if (!db.prepare("SELECT name FROM pragma_table_info('users') WHERE name = 'is_banned'").get()) db.exec('ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0');
@@ -298,7 +300,7 @@ function adminContent() {
 }
 async function translateArticle(article, language) {
   if (language === 'en') return article;
-  const cached = db.prepare('SELECT title, summary FROM translations WHERE article_id = ? AND language = ?').get(article.id, language);
+  const cached = db.prepare('SELECT title, summary FROM translations WHERE article_id = ? AND language = ? AND version = ?').get(article.id, language, TRANSLATION_CACHE_VERSION);
   if (cached) return { ...article, title: cached.title, summary: cached.summary || article.summary };
   const divider = '\n\n=====|=====\n\n';
   try {
@@ -314,8 +316,12 @@ async function translateArticle(article, language) {
     const translated = (data[0] || []).map((part) => part[0]).join('');
     const [title, summary] = translated.split('=====|=====');
     if (!title || summary === undefined) throw new Error('Translation response is incomplete');
-    const translatedArticle = { ...article, title: title.trim(), summary: summary.trim() };
-    db.prepare('INSERT OR REPLACE INTO translations (article_id, language, title, summary) VALUES (?, ?, ?, ?)').run(article.id, language, translatedArticle.title, translatedArticle.summary);
+    let translatedTitle = title.trim();
+    // Google sometimes treats a short English headline as a name and returns it unchanged.
+    // A forced English source language keeps Russian feeds consistently translated.
+    if (language === 'ru' && isMostlyLatin(article.title)) translatedTitle = (await translateText(article.title, language, 'en')).trim();
+    const translatedArticle = { ...article, title: translatedTitle, summary: summary.trim() };
+    db.prepare('INSERT OR REPLACE INTO translations (article_id, language, title, summary, version) VALUES (?, ?, ?, ?, ?)').run(article.id, language, translatedArticle.title, translatedArticle.summary, TRANSLATION_CACHE_VERSION);
     return translatedArticle;
   } catch (error) {
     console.error(`Could not translate article ${article.id}: ${error.message}`);
@@ -499,11 +505,17 @@ async function loadOriginalPage(article) {
   db.prepare('INSERT OR REPLACE INTO article_pages (article_id, original_title, original_content, original_markup, original_markup_version) VALUES (?, ?, ?, ?, ?)').run(article.id, page.title, page.content, page.markup || '', RICH_MARKUP_VERSION);
   return page;
 }
-async function translateText(text, language) {
+function isMostlyLatin(text) {
+  const value = String(text || '');
+  const latin = (value.match(/[A-Za-z]/g) || []).length;
+  const cyrillic = (value.match(/[А-Яа-яЁё]/g) || []).length;
+  return latin >= 4 && latin > cyrillic;
+}
+async function translateText(text, language, sourceLanguage = 'auto') {
   if (language === 'en' || !text) return text;
   const url = new URL('https://translate.googleapis.com/translate_a/single');
   url.searchParams.set('client', 'gtx');
-  url.searchParams.set('sl', 'auto');
+  url.searchParams.set('sl', sourceLanguage);
   url.searchParams.set('tl', language);
   url.searchParams.set('dt', 't');
   url.searchParams.set('q', text);
