@@ -31,7 +31,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS user_profiles (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, display_name TEXT NOT NULL, bio TEXT NOT NULL DEFAULT '', avatar_url TEXT NOT NULL DEFAULT '');
   CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id INTEGER, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE INDEX IF NOT EXISTS comments_article_idx ON comments(article_id, created_at DESC);
-  CREATE TABLE IF NOT EXISTS user_posts (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, blocks_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, published_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, view_count INTEGER NOT NULL DEFAULT 0, is_hidden INTEGER NOT NULL DEFAULT 0);
+  CREATE TABLE IF NOT EXISTS user_posts (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, blocks_json TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'tools', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, published_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, view_count INTEGER NOT NULL DEFAULT 0, is_hidden INTEGER NOT NULL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS post_votes (post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE, poll_id TEXT NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, option_index INTEGER NOT NULL, PRIMARY KEY (post_id, poll_id, user_id));
   CREATE INDEX IF NOT EXISTS user_posts_published_idx ON user_posts(published_at DESC);
   CREATE TABLE IF NOT EXISTS post_comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id INTEGER, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -45,6 +45,7 @@ if (!db.prepare("SELECT name FROM pragma_table_info('user_profiles') WHERE name 
 if (!db.prepare("SELECT name FROM pragma_table_info('articles') WHERE name = 'view_count'").get()) db.exec('ALTER TABLE articles ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0');
 if (!db.prepare("SELECT name FROM pragma_table_info('articles') WHERE name = 'source_popularity_label'").get()) db.exec("ALTER TABLE articles ADD COLUMN source_popularity_label TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("SELECT name FROM pragma_table_info('user_posts') WHERE name = 'view_count'").get()) db.exec('ALTER TABLE user_posts ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0');
+if (!db.prepare("SELECT name FROM pragma_table_info('user_posts') WHERE name = 'category'").get()) db.exec("ALTER TABLE user_posts ADD COLUMN category TEXT NOT NULL DEFAULT 'tools'");
 if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup'").get()) db.exec("ALTER TABLE article_pages ADD COLUMN original_markup TEXT NOT NULL DEFAULT ''");
 if (!db.prepare("SELECT name FROM pragma_table_info('article_pages') WHERE name = 'original_markup_version'").get()) db.exec('ALTER TABLE article_pages ADD COLUMN original_markup_version INTEGER NOT NULL DEFAULT 1');
 if (!db.prepare("SELECT name FROM pragma_table_info('article_page_translations') WHERE name = 'markup'").get()) db.exec("ALTER TABLE article_page_translations ADD COLUMN markup TEXT NOT NULL DEFAULT ''");
@@ -648,7 +649,7 @@ function safeBlocks(rawBlocks) {
 }
 function postRow(post) { return { ...post, blocks: JSON.parse(post.blocksJson), kind: 'post' }; }
 function postsForFeed() {
-  return db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt, user_posts.view_count AS viewCount,
+  return db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.category, user_posts.published_at AS publishedAt, user_posts.view_count AS viewCount,
     (SELECT COUNT(*) FROM post_comments WHERE post_comments.post_id = user_posts.id) AS commentCount,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
     FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE user_posts.is_hidden = 0 ORDER BY datetime(user_posts.published_at) DESC LIMIT 20`).all().map(postRow);
@@ -662,7 +663,7 @@ function pollResults(postId, blocks, userId) {
   }, {});
 }
 function postById(postId, user) {
-  const post = db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt, user_posts.view_count AS viewCount,
+  const post = db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.category, user_posts.published_at AS publishedAt, user_posts.view_count AS viewCount,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
     FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE user_posts.id = ? AND user_posts.is_hidden = 0`).get(postId);
   if (!post) return null;
@@ -674,7 +675,7 @@ function profileById(userId) {
     COALESCE(user_profiles.bio, '') AS bio, COALESCE(user_profiles.avatar_url, '') AS avatarUrl, users.created_at AS createdAt
     FROM users LEFT JOIN user_profiles ON user_profiles.user_id = users.id WHERE users.id = ?`).get(userId);
   if (!profile) return null;
-  const posts = db.prepare(`SELECT id, title, blocks_json AS blocksJson, published_at AS publishedAt FROM user_posts WHERE user_id = ? AND is_hidden = 0 ORDER BY datetime(published_at) DESC`).all(userId).map(postRow);
+  const posts = db.prepare(`SELECT id, title, blocks_json AS blocksJson, category, published_at AS publishedAt FROM user_posts WHERE user_id = ? AND is_hidden = 0 ORDER BY datetime(published_at) DESC`).all(userId).map(postRow);
   const comments = db.prepare(`SELECT * FROM (
     SELECT comments.id, comments.body, comments.created_at AS createdAt, articles.id AS targetId, articles.title AS targetTitle, 'article' AS targetKind
     FROM comments JOIN articles ON articles.id = comments.article_id WHERE comments.user_id = ?
@@ -763,7 +764,7 @@ async function searchContent(user, query, sourceId) {
   articleSql += ' ORDER BY CASE WHEN articles.title LIKE ? THEN 0 ELSE 1 END, datetime(articles.published_at) DESC LIMIT 30';
   articleParams.push(like);
   const articleRows = db.prepare(articleSql).all(...articleParams);
-  const postRows = selectedSourceId ? [] : db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.published_at AS publishedAt, user_posts.view_count AS viewCount,
+  const postRows = selectedSourceId ? [] : db.prepare(`SELECT user_posts.id, user_posts.user_id AS authorId, user_posts.title, user_posts.blocks_json AS blocksJson, user_posts.category, user_posts.published_at AS publishedAt, user_posts.view_count AS viewCount,
     (SELECT COUNT(*) FROM post_comments WHERE post_comments.post_id = user_posts.id) AS commentCount,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
     FROM user_posts JOIN users ON users.id = user_posts.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id
@@ -864,12 +865,14 @@ async function api(request, response, url) {
   if (request.method === 'GET' && url.pathname === '/api/posts') return json(response, 200, { posts: postsForFeed() });
   if (request.method === 'POST' && url.pathname === '/api/posts') {
     if (!user) return json(response, 401, { error: 'Войдите, чтобы опубликовать статью.' });
-    const { title = '', blocks = [] } = await body(request);
+    const { title = '', blocks = [], category = 'tools' } = await body(request);
     const normalizedTitle = String(title).trim().slice(0, 240);
+    const normalizedCategory = String(category).trim();
     if (normalizedTitle.length < 5) return badRequest(response, 'Заголовок должен содержать не менее 5 символов.');
+    if (!TOPICS.includes(normalizedCategory)) return badRequest(response, 'Выберите тему статьи.');
     let safe;
     try { safe = safeBlocks(blocks); } catch (error) { return badRequest(response, error.message); }
-    const result = db.prepare('INSERT INTO user_posts (user_id, title, blocks_json) VALUES (?, ?, ?)').run(user.id, normalizedTitle, JSON.stringify(safe));
+    const result = db.prepare('INSERT INTO user_posts (user_id, title, blocks_json, category) VALUES (?, ?, ?, ?)').run(user.id, normalizedTitle, JSON.stringify(safe), normalizedCategory);
     return json(response, 201, { post: postById(Number(result.lastInsertRowid), user) });
   }
   const postMatch = url.pathname.match(/^\/api\/posts\/(\d+)$/);
