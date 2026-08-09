@@ -226,6 +226,12 @@ function selectSource(sourceId) { const requestedSourceId = Number(sourceId) || 
 function selectBest(period = 'day') { const selectedPeriod = ['day', 'week', 'month'].includes(period) ? period : 'day'; trackEvent('highlights_period_select', { period: selectedPeriod, source_ids: state.sourceIds, sort: state.feedSort }); state.bestPeriod = selectedPeriod; state.topic = 'all'; syncTopicControls(); const query = new URLSearchParams({ best: selectedPeriod }); if (state.sourceIds.length) query.set('source', state.sourceIds.join(',')); if (state.feedSort !== 'recent') query.set('sort', state.feedSort); if (!$('#articleList')) { location.href = `/?${query}`; return; } history.replaceState(null, '', `/?${query}`); renderSources(); loadFeed(); }
 function selectFeedSort(sort) { const selectedSort = ['recent', 'views', 'comments'].includes(sort) ? sort : 'recent'; trackEvent('personal_feed_sort', { sort: selectedSort, period: state.bestPeriod || 'all' }); state.feedSort = selectedSort; const query = new URLSearchParams(); if (state.bestPeriod) query.set('best', state.bestPeriod); if (state.sourceIds.length) query.set('source', state.sourceIds.join(',')); if (selectedSort !== 'recent') query.set('sort', selectedSort); history.replaceState(null, '', query.size ? `/?${query}` : '/'); loadFeed(); }
 document.querySelectorAll('[data-topic]').forEach((button) => button.addEventListener('click', () => selectTopic(button.dataset.topic)));
+const closeMobileMenu = () => { document.body.classList.remove('mobile-menu-open'); $('#mobileMenuToggle').setAttribute('aria-expanded', 'false'); };
+$('#mobileMenuToggle').addEventListener('click', () => { const opened = document.body.classList.toggle('mobile-menu-open'); $('#mobileMenuToggle').setAttribute('aria-expanded', String(opened)); });
+$('#mobileMenuBackdrop').addEventListener('click', closeMobileMenu);
+document.querySelectorAll('.left-sidebar a, .left-sidebar button').forEach((control) => control.addEventListener('click', () => { if (window.matchMedia('(max-width: 900px)').matches) setTimeout(closeMobileMenu, 0); }));
+window.addEventListener('resize', () => { if (window.innerWidth > 900) closeMobileMenu(); });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeMobileMenu(); });
 $('#themeToggle').addEventListener('click', () => document.body.classList.toggle('dark'));
 $('#sidebarTheme').addEventListener('click', () => document.body.classList.toggle('dark'));
 $('#sidebarFresh').addEventListener('click', () => selectTopic('all'));
