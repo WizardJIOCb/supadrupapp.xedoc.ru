@@ -1,0 +1,21 @@
+[Unit]
+Description=signal/ai personal news service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/supadrupapp
+Environment=NODE_ENV=production
+Environment=PORT=3110
+Environment=DATA_DIR=/var/lib/supadrupapp
+ExecStart=/usr/bin/node /opt/supadrupapp/server.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Личная лента новостей об ИИ, моделях и разработке." />
-    <title>signal/ai — новости, которые хочется читать</title>
+    <meta name="description" content="Персональная лента новостей об ИИ, моделях и разработке." />
+    <title>signal/ai — персональная лента</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -13,83 +13,42 @@
   <body>
     <div class="noise"></div>
     <header class="topbar">
-      <a class="brand" href="#top" aria-label="signal ai — на главную"><span>signal</span><i>/</i>ai</a>
-      <nav aria-label="Основная навигация">
-        <a class="active" href="#feed">Лента</a>
-        <a href="#digest">Дайджест</a>
-        <a href="#sources">Источники</a>
-      </nav>
-      <div class="header-actions">
-        <button class="icon-button" id="themeToggle" aria-label="Переключить тему">◐</button>
-        <button class="subscribe-button" id="subscribeButton">Подписаться <span>↗</span></button>
-      </div>
+      <a class="brand" href="/" aria-label="На главную"><span>signal</span><i>/</i>ai</a>
+      <nav aria-label="Навигация"><a class="active" href="#feed">Лента</a><a href="#sources">Источники</a></nav>
+      <div class="header-actions"><button class="icon-button" id="themeToggle" aria-label="Переключить тему">◐</button><button class="account-button" id="accountButton">Войти</button></div>
     </header>
-
-    <main id="top">
-      <section class="hero" aria-labelledby="hero-title">
-        <p class="eyebrow"><span class="live-dot"></span> Лента обновлена сегодня, 10:42</p>
-        <h1 id="hero-title">Что нового<br />в <em>будущем?</em></h1>
-        <p class="hero-copy">Персональная подборка главного из AI, новых моделей, dev-инструментов и всего, что заставляет открыть ещё одну вкладку.</p>
-        <div class="hero-meta"><span>09 августа 2026</span><span>Екатеринбург · 14:42</span></div>
+    <main>
+      <section class="hero">
+        <p class="eyebrow"><span class="live-dot"></span> <span id="refreshLabel">Собираем свежие публикации</span></p>
+        <h1>Ваш поток<br /><em>нового.</em></h1>
+        <div class="hero-copy"><p>Настройте ленту под свои интересы — модели, разработки, исследования и инструменты. Новые публикации приходят из выбранных источников.</p><button class="text-button" id="setupButton">Настроить мой поток <span>→</span></button></div>
       </section>
-
       <section class="topics" aria-label="Темы">
-        <button class="topic active" data-topic="all">Всё <span>24</span></button>
-        <button class="topic" data-topic="models">Модели <span>08</span></button>
-        <button class="topic" data-topic="dev">Разработка <span>06</span></button>
-        <button class="topic" data-topic="research">Исследования <span>05</span></button>
-        <button class="topic" data-topic="tools">Инструменты <span>05</span></button>
-        <label class="search"><span>⌕</span><input id="searchInput" type="search" placeholder="Поиск по ленте" /></label>
+        <button class="topic active" data-topic="all">Всё</button><button class="topic" data-topic="models">Модели</button><button class="topic" data-topic="dev">Разработка</button><button class="topic" data-topic="research">Исследования</button><button class="topic" data-topic="tools">Инструменты</button>
+        <button class="refresh-button" id="refreshButton">Обновить <span>↻</span></button>
       </section>
-
       <section class="content-grid" id="feed">
         <div class="feed-column">
-          <div class="section-label"><span>01</span><h2>Главное сегодня</h2><span class="line"></span></div>
-          <article class="lead-card article" data-topic="models" data-title="Новые модели перестали быть просто чат-ботами">
-            <div class="lead-art"><div class="orb orb-one"></div><div class="orb orb-two"></div><div class="grid-lines"></div><span>01<br />/ 01</span></div>
-            <div class="article-content">
-              <div class="article-meta"><span class="tag model">Модели</span><span>8 мин чтения</span></div>
-              <h3>Новые модели перестали быть просто чат‑ботами. Что теперь важно знать?</h3>
-              <p>Разбираемся, почему агентные сценарии и умение работать с контекстом становятся важнее бенчмарков.</p>
-              <div class="article-footer"><span>Сегодня · 10:12</span><button class="save-button" aria-label="Сохранить публикацию">☆</button></div>
-            </div>
-          </article>
-          <div class="article-list">
-            <article class="compact-card article" data-topic="dev" data-title="Как устроить личную AI лабораторию на домашнем сервере">
-              <div class="number">02</div><div><div class="article-meta"><span class="tag dev">Dev</span><span>6 мин</span></div><h3>Как устроить личную AI-лабораторию на домашнем сервере</h3><p>Модели, железо, интерфейсы и несколько граблей из практики.</p></div><div class="article-footer"><span>09:45</span><button class="save-button" aria-label="Сохранить публикацию">☆</button></div>
-            </article>
-            <article class="compact-card article" data-topic="research" data-title="Почему synthetic data снова на подъёме">
-              <div class="number">03</div><div><div class="article-meta"><span class="tag research">Research</span><span>4 мин</span></div><h3>Почему synthetic data снова на подъёме</h3><p>Свежий взгляд на данные, которыми модели будут учиться дальше.</p></div><div class="article-footer"><span>Вчера</span><button class="save-button" aria-label="Сохранить публикацию">☆</button></div>
-            </article>
-            <article class="compact-card article" data-topic="tools" data-title="Пять маленьких инструментов для спокойной разработки">
-              <div class="number">04</div><div><div class="article-meta"><span class="tag tools">Tools</span><span>5 мин</span></div><h3>Пять маленьких инструментов для спокойной разработки</h3><p>Те, что экономят по пять минут — и незаметно меняют весь день.</p></div><div class="article-footer"><span>Вчера</span><button class="save-button" aria-label="Сохранить публикацию">☆</button></div>
-            </article>
-          </div>
-          <button class="more-button" id="moreButton">Показать ещё <span>↓</span></button>
+          <div class="section-label"><span>01</span><h2 id="feedHeading">Свежие публикации</h2><span class="line"></span></div>
+          <div class="article-grid" id="articleList" aria-live="polite"><div class="empty-state">Загружаем ленту…</div></div>
         </div>
-
-        <aside>
-          <section class="side-block" id="digest">
-            <div class="section-label"><span>02</span><h2>В двух словах</h2></div>
-            <div class="brief"><span class="brief-mark">↗</span><p>Важное —<br /><strong>в одном месте.</strong></p><small>Короткие факты, релизы и ссылки, которые стоит открыть.</small></div>
-            <ul class="brief-list">
-              <li><span>10:30</span><a href="#feed">Новый подход к генерации видео в реальном времени</a></li>
-              <li><span>09:20</span><a href="#feed">Вышел интересный open-source агент для CLI</a></li>
-              <li><span>ВЧЕРА</span><a href="#feed">Команда показала, как ускорила inference в 3 раза</a></li>
-            </ul>
+        <aside id="sources">
+          <section class="side-block profile-card">
+            <div class="section-label"><span>02</span><h2>Ваш поток</h2></div>
+            <div id="profileContent"><p>Войдите, чтобы выбирать темы и получать персональную подборку.</p><button class="subscribe-button" id="profileLogin">Создать аккаунт <span>↗</span></button></div>
           </section>
-          <section class="side-block sources" id="sources">
-            <div class="section-label"><span>03</span><h2>Радар источников</h2></div>
-            <div class="source"><span class="source-logo openai">O</span><div><strong>OpenAI</strong><small>Релизы и исследования</small></div><span class="source-status">●</span></div>
-            <div class="source"><span class="source-logo hf">H</span><div><strong>Hugging Face</strong><small>Модели и комьюнити</small></div><span class="source-status">●</span></div>
-            <div class="source"><span class="source-logo gw">GW</span><div><strong>GitHub Watch</strong><small>Трендовые репозитории</small></div><span class="source-status muted">●</span></div>
-            <button class="manage-button">Настроить источники <span>→</span></button>
+          <section class="side-block">
+            <div class="section-label"><span>03</span><h2>Источники</h2></div>
+            <div id="sourceList" class="source-list"><p class="loading-copy">Загружаем источники…</p></div>
+            <button class="manage-button" id="sourcesSetup">Настроить источники <span>→</span></button>
           </section>
         </aside>
       </section>
     </main>
-    <footer><a class="brand" href="#top"><span>signal</span><i>/</i>ai</a><p>Ваш личный фильтр будущего.</p><span>Сделано с любопытством · 2026</span></footer>
-    <dialog id="subscribeDialog"><button class="dialog-close" aria-label="Закрыть">×</button><p class="eyebrow">Еженедельный дайджест</p><h2>Только то, что стоит вашего внимания.</h2><p>Оставьте email — и получайте главные материалы недели без бесконечной ленты.</p><form id="subscribeForm"><input type="email" placeholder="you@example.com" required /><button>Подписаться</button></form><small id="formMessage"></small></dialog>
+    <footer><a class="brand" href="/"><span>signal</span><i>/</i>ai</a><p>Лента для технологического любопытства.</p><span>Реальные RSS-источники · 2026</span></footer>
+
+    <dialog id="authDialog"><button class="dialog-close" data-close="authDialog" aria-label="Закрыть">×</button><p class="eyebrow">Личный аккаунт</p><h2 id="authTitle">Войти в поток</h2><p id="authText">Сохраните темы и источники, чтобы лента подстраивалась под вас.</p><form id="authForm"><label>Email<input name="email" type="email" autocomplete="email" required placeholder="you@example.com" /></label><label>Пароль<input name="password" type="password" autocomplete="current-password" required minlength="8" placeholder="Не менее 8 символов" /></label><button>Войти</button></form><button class="form-switch" id="authSwitch">Нет аккаунта? Создать</button><small class="form-message" id="authMessage"></small></dialog>
+    <dialog id="settingsDialog"><button class="dialog-close" data-close="settingsDialog" aria-label="Закрыть">×</button><p class="eyebrow">Персональная настройка</p><h2>Что вам интересно?</h2><p>Выберите темы и источники — лента обновится сразу.</p><form id="settingsForm"><fieldset><legend>Темы</legend><div class="check-grid" id="topicSettings"></div></fieldset><fieldset><legend>Источники</legend><div class="check-grid sources-checks" id="sourceSettings"></div></fieldset><button>Сохранить настройки</button></form><small class="form-message" id="settingsMessage"></small></dialog>
     <script src="app.js"></script>
   </body>
 </html>
