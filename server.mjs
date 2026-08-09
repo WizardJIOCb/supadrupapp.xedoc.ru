@@ -53,6 +53,7 @@ const SOURCE_SEED = [
   ['vc.ru', 'https://vc.ru/', 'https://vc.ru/rss', '#ff7692'],
   ['DTF', 'https://dtf.ru/', 'https://dtf.ru/rss/all', '#78c9f0'],
   ['Habr', 'https://habr.com/ru/', 'https://habr.com/ru/rss/articles/top/daily/?fl=ru', '#5ac9e8'],
+  ['Hacker News', 'https://news.ycombinator.com/', 'https://hacker-news.firebaseio.com/v0/topstories.json', '#ff9c48'],
 ];
 const insertSource = db.prepare('INSERT OR IGNORE INTO sources (name, url, feed_url, accent) VALUES (?, ?, ?, ?)');
 SOURCE_SEED.forEach((source) => insertSource.run(...source));
@@ -88,7 +89,7 @@ function categoryFor(sourceName, title, summary) {
   if (/movie|film|series|music|streaming|netflix|hbo|disney|anime|cinema|кино|фильм|сериал|музык|стриминг|аниме|комикс|режисс/.test(text)) return 'media';
   if (sourceName === 'DTF') return 'games';
   if (sourceName === 'vc.ru') return 'business';
-  return sourceName === 'GitHub Blog' || sourceName === 'Cloudflare' ? 'dev' : 'tools';
+  return sourceName === 'GitHub Blog' || sourceName === 'Cloudflare' || sourceName === 'Hacker News' ? 'dev' : 'tools';
 }
 function reclassifyArticles() {
   const articles = db.prepare('SELECT articles.id, articles.title, articles.summary, articles.category, sources.name AS sourceName FROM articles JOIN sources ON sources.id = articles.source_id').all();
@@ -113,6 +114,24 @@ function parseFeed(xml, source) {
     return { externalId: `${source.id}:${externalId}`, title: title.slice(0, 500), url, summary: summary.slice(0, 900), category: categoryFor(source.name, title, summary), publishedAt: Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString(), sourcePopularityLabel };
   }).filter(Boolean);
 }
+async function hackerNewsFeed(source) {
+  const response = await fetch(source.feed_url, { signal: AbortSignal.timeout(15000) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const ids = (await response.json()).slice(0, 40);
+  const items = await Promise.all(ids.map(async (id, index) => {
+    const itemResponse = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`, { signal: AbortSignal.timeout(15000) });
+    if (!itemResponse.ok) return null;
+    const item = await itemResponse.json();
+    const publishedAt = new Date((item?.time || 0) * 1000);
+    if (!item || item.type !== 'story' || item.dead || item.deleted || !item.title || Number.isNaN(publishedAt.getTime()) || Date.now() - publishedAt.getTime() > 72 * 60 * 60 * 1000) return null;
+    const score = Number(item.score) || 0;
+    const comments = Number(item.descendants) || 0;
+    const url = item.url || `https://news.ycombinator.com/item?id=${item.id}`;
+    const summary = clean(item.text || `Обсуждение в Hacker News: ${comments} комментариев.`);
+    return { externalId: `${source.id}:hn:${item.id}`, title: item.title.slice(0, 500), url, summary: summary.slice(0, 900), category: categoryFor(source.name, item.title, summary), publishedAt: publishedAt.toISOString(), sourcePopularityLabel: `Топ HN · #${index + 1} · ${score} pts · ${comments} комм.` };
+  }));
+  return items.filter(Boolean);
+}
 async function refreshFeeds(force = false) {
   if (refreshPromise) return refreshPromise;
   if (!force && Date.now() - lastRefresh < 10 * 60 * 1000) return { updated: 0, cached: true };
@@ -123,6 +142,11 @@ async function refreshFeeds(force = false) {
     let updated = 0;
     await Promise.all(sources.map(async (source) => {
       try {
+        if (source.name === 'Hacker News') {
+          const articles = await hackerNewsFeed(source);
+          for (const article of articles) updated += addArticle.run(source.id, article.externalId, article.title, article.url, article.summary, article.category, article.publishedAt, article.sourcePopularityLabel).changes;
+          return;
+        }
         const response = await fetch(source.feed_url, { headers: { 'User-Agent': 'supa-news/1.0 (+https://supadrupapp.xedoc.ru)' }, signal: AbortSignal.timeout(15000) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const articles = parseFeed(await response.text(), source);
