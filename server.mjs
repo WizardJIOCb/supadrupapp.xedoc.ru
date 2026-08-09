@@ -57,7 +57,7 @@ const SOURCE_SEED = [
 const insertSource = db.prepare('INSERT OR IGNORE INTO sources (name, url, feed_url, accent) VALUES (?, ?, ?, ?)');
 SOURCE_SEED.forEach((source) => insertSource.run(...source));
 const TOPICS = ['models', 'dev', 'research', 'tools', 'games', 'business', 'media'];
-const RICH_MARKUP_VERSION = 3;
+const RICH_MARKUP_VERSION = 6;
 let lastRefresh = 0;
 let refreshPromise = null;
 
@@ -214,12 +214,14 @@ async function translateArticles(articles, language) {
   await Promise.all(Array.from({ length: Math.min(6, articles.length) }, worker));
   return articles.map((article) => result.find((translated) => translated.id === article.id) || article);
 }
-function extractPageContent(html) {
-  const candidates = [html.match(/<article(?:\s[^>]*)?>([\s\S]*?)<\/article>/i)?.[1], html.match(/<main(?:\s[^>]*)?>([\s\S]*?)<\/main>/i)?.[1], html.match(/<body(?:\s[^>]*)?>([\s\S]*?)<\/body>/i)?.[1], html].filter(Boolean);
+function extractPageContent(html, preferFragment = false) {
+  let codeIndex = 0;
+  const codeProtected = String(html || '').replace(/<pre\b[^>]*>[\s\S]*?<\/pre>/gi, () => `\n\n[[CODE_BLOCK_${codeIndex++}]]\n\n`);
+  const candidates = (preferFragment ? [codeProtected] : [codeProtected.match(/<article(?:\s[^>]*)?>([\s\S]*?)<\/article>/i)?.[1], codeProtected.match(/<main(?:\s[^>]*)?>([\s\S]*?)<\/main>/i)?.[1], codeProtected.match(/<body(?:\s[^>]*)?>([\s\S]*?)<\/body>/i)?.[1], codeProtected]).filter(Boolean);
   return candidates.map((candidate) => {
     const withoutChrome = candidate.replace(/<(script|style|svg|nav|header|footer|aside|form|noscript)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
     const withBreaks = withoutChrome.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|h1|h2|h3|h4|li|blockquote|pre|div|section)>/gi, '\n\n');
-    return decodeEntities(withBreaks.replace(/<[^>]+>/g, ' ')).split(/\n\s*\n/).map((part) => part.replace(/\s+/g, ' ').trim()).filter((part) => part.length > 35).slice(0, 220).join('\n\n').slice(0, 100000);
+    return decodeEntities(withBreaks.replace(/<[^>]+>/g, ' ')).split(/\n\s*\n/).map((part) => part.replace(/\s+/g, ' ').trim()).filter((part) => part.length > 35 || /^\[\[CODE_BLOCK_\d+\]\]$/.test(part)).slice(0, 220).join('\n\n').slice(0, 100000);
   }).sort((left, right) => right.length - left.length)[0] || '';
 }
 function safeExternalUrl(value, base) {
@@ -234,13 +236,15 @@ function safeExternalUrl(value, base) {
   } catch { return ''; }
 }
 function safeRichMarkup(html, base) {
-  const allowed = new Set(['p', 'h2', 'h3', 'ul', 'ol', 'li', 'blockquote', 'strong', 'b', 'em', 'i', 'br', 'a']);
+  const allowed = new Set(['p', 'h2', 'h3', 'ul', 'ol', 'li', 'blockquote', 'strong', 'b', 'em', 'i', 'br', 'a', 'pre', 'code']);
   return String(html || '').replace(/<[^>]*>/g, (rawTag) => {
     const match = rawTag.match(/^<\s*(\/?)\s*([a-z0-9]+)/i);
     if (!match) return '';
     const closing = Boolean(match[1]);
     const name = match[2].toLowerCase();
     if (!allowed.has(name)) return '';
+    if (name === 'pre') return closing ? '</pre>' : '<pre class="reader-code-block">';
+    if (name === 'code') return closing ? '</code>' : '<code>';
     if (name === 'br') return closing ? '' : '<br />';
     if (name !== 'a') return `<${closing ? '/' : ''}${name}>`;
     if (closing) return '</a>';
@@ -248,6 +252,40 @@ function safeRichMarkup(html, base) {
     const url = safeExternalUrl(href?.[1] || href?.[2] || href?.[3], base);
     return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">` : '<a>';
   }).replace(/<p>\s*<\/p>/gi, '').trim();
+}
+function elementInnerHtml(html, openingPattern) {
+  const opening = openingPattern.exec(html);
+  if (!opening) return '';
+  const start = opening.index;
+  const openingTagEnd = html.indexOf('>', start);
+  const tagName = opening[0].match(/^<\s*([a-z0-9]+)/i)?.[1];
+  if (openingTagEnd < 0 || !tagName) return '';
+  const tags = new RegExp(`<\\/?${tagName}\\b[^>]*>`, 'gi');
+  tags.lastIndex = start;
+  let depth = 0;
+  let tag;
+  while ((tag = tags.exec(html))) {
+    if (tag[0].startsWith('</')) depth -= 1;
+    else if (!tag[0].endsWith('/>')) depth += 1;
+    if (depth === 0) return html.slice(openingTagEnd + 1, tag.index);
+  }
+  return '';
+}
+function genericRichPage(html, article) {
+  const fragment = article.sourceName === 'Habr'
+    ? elementInnerHtml(html, /<div\b[^>]*\bid=["']post-content-body["'][^>]*>/i)
+    : elementInnerHtml(html, /<div\b[^>]*\bclass=["'][^"']*\bpost-content\b[^"']*["'][^>]*>/i) || elementInnerHtml(html, /<article\b[^>]*>/i);
+  if (!fragment) return null;
+  const withoutHeader = fragment.replace(/<header\b[^>]*>[\s\S]*?<\/header>/gi, '');
+  const markup = safeRichMarkup(withoutHeader, article.url).replace(/(?:<br>\s*){3,}/g, '<br><br>').trim();
+  const content = extractPageContent(withoutHeader, true);
+  return markup.includes('<pre') && content.length >= 80 ? { title: pageTitleFromHtml(html, article.title), content, markup } : null;
+}
+function contentMarkupWithCode(content, originalMarkup) {
+  const codeBlocks = [...String(originalMarkup || '').matchAll(/<pre\b[^>]*>[\s\S]*?<\/pre>/gi)].map((match) => match[0]);
+  if (!codeBlocks.length) return '';
+  const paragraphMarkup = (text) => text.split(/\n\n+/).map((paragraph) => paragraph.trim()).filter(Boolean).map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`).join('');
+  return String(content || '').split(/\[\[CODE_BLOCK_(\d+)\]\]/g).map((part, index) => index % 2 ? codeBlocks[Number(part)] || '' : paragraphMarkup(part)).join('');
 }
 function jsonObjectAt(source, from) {
   const start = source.indexOf('{', from);
@@ -320,7 +358,7 @@ function pageTitleFromHtml(html, fallback) {
 }
 async function loadOriginalPage(article) {
   const cached = db.prepare('SELECT original_title AS title, original_content AS content, original_markup AS markup, original_markup_version AS markupVersion FROM article_pages WHERE article_id = ?').get(article.id);
-  if (cached?.content.length >= 200 && (article.sourceName !== 'DTF' || (cached.markup && cached.markupVersion === RICH_MARKUP_VERSION))) return cached;
+  if (cached?.content.length >= 200 && cached.markupVersion === RICH_MARKUP_VERSION) return cached;
   let page;
   try {
     const destination = new URL(article.url);
@@ -328,7 +366,7 @@ async function loadOriginalPage(article) {
     const response = await fetch(destination, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36', 'Accept-Language': 'en-US,en;q=0.9' }, signal: AbortSignal.timeout(20000) });
     if (!response.ok) throw new Error(`Источник вернул HTTP ${response.status}`);
     const html = await response.text();
-    page = (article.sourceName === 'DTF' ? dtfRichPage(html, article) : null) || { title: pageTitleFromHtml(html, article.title), content: extractPageContent(html), markup: '' };
+    page = (article.sourceName === 'DTF' ? dtfRichPage(html, article) : null) || genericRichPage(html, article) || { title: pageTitleFromHtml(html, article.title), content: extractPageContent(html), markup: '' };
   } catch (error) {
     console.error(`Could not copy article ${article.id}: ${error.message}`);
     page = { title: article.title, content: article.summary || 'Источник временно не разрешил загрузку полного текста. Откройте оригинал по ссылке выше.', markup: '' };
@@ -373,11 +411,11 @@ async function articlePage(user, articleId) {
   if (language === 'en') return { ...article, ...original, language, originalUrl: article.url, markup: original.markup || '' };
   if (article.sourceName === 'DTF' && original.markup) return { ...article, ...original, language: 'ru', originalUrl: article.url, markup: original.markup };
   const cached = db.prepare('SELECT title, content FROM article_page_translations WHERE article_id = ? AND language = ?').get(article.id, language);
-  if (cached?.content.length >= 200) return { ...article, title: cached.title, content: cached.content, language, originalUrl: article.url };
+  if (cached?.content.length >= 200 && !original.markup.includes('<pre')) return { ...article, title: cached.title, content: cached.content, language, originalUrl: article.url };
   try {
     const [title, content] = await Promise.all([translateText(original.title, language), translateLongText(original.content, language)]);
     db.prepare('INSERT OR REPLACE INTO article_page_translations (article_id, language, title, content) VALUES (?, ?, ?, ?)').run(article.id, language, title, content);
-    return { ...article, title, content, language, originalUrl: article.url };
+    return { ...article, title, content, language, originalUrl: article.url, markup: contentMarkupWithCode(content, original.markup) };
   } catch (error) {
     console.error(`Could not translate article page ${article.id}: ${error.message}`);
     return { ...article, ...original, language: 'en', originalUrl: article.url };

@@ -66,6 +66,23 @@ function articleMarkup(article) {
   const popularity = article.sourcePopularityLabel ? `<span class="source-popularity" title="Популярность в источнике">↗ ${escapeHtml(article.sourcePopularityLabel)}</span>` : '';
   return `<article class="article-card ${ownPost ? 'author-post-card' : ''}"><a href="${ownPost ? `/post/${article.id}` : `/article/${article.id}`}"><div class="article-top"><span class="tag ${ownPost ? 'tools' : article.category}">${ownPost ? 'Автор' : (labels[article.category] || 'News')}</span><span class="source-dot" style="--accent:${ownPost ? '#8463ef' : escapeHtml(article.accent)}"></span><span>${escapeHtml(ownPost ? article.author : article.sourceName)}</span></div><h3>${escapeHtml(article.title)}</h3><p>${escapeHtml(article.summary || 'Открыть публикацию в источнике.')}</p><div class="article-footer"><div class="article-metrics"><time datetime="${escapeHtml(article.publishedAt)}" title="${escapeHtml(date)}">${relativeDate(article.publishedAt)}</time>${popularity}<span class="article-metric" aria-label="Просмотров: ${views}" title="Просмотров"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>${views}</span><span class="article-metric" aria-label="Комментариев: ${comments}" title="Комментариев"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v10H9l-5 3v-13Z"/></svg>${comments}</span></div><span>Читать здесь →</span></div></a></article>`;
 }
+function enhanceCodeBlocks() {
+  document.querySelectorAll('.reader-code-block').forEach((block) => {
+    if (block.dataset.enhanced) return;
+    block.dataset.enhanced = 'true';
+    const code = block.querySelector('code') || block.appendChild(document.createElement('code'));
+    const text = code.textContent.replace(/\r\n/g, '\n').replace(/^\n|\n\s*$/g, '');
+    const lines = text.split('\n');
+    code.innerHTML = lines.map((line) => `<span class="code-line">${escapeHtml(line) || ' '}</span>`).join('');
+    const toolbar = document.createElement('div');
+    toolbar.className = 'code-toolbar';
+    toolbar.innerHTML = `<span>Код · ${lines.length} строк</span><div><button type="button" data-code-wrap>Перенос</button><button type="button" data-code-lines>Номера</button><button type="button" data-code-copy>Копировать</button></div>`;
+    block.prepend(toolbar);
+    toolbar.querySelector('[data-code-wrap]').addEventListener('click', (event) => { block.classList.toggle('code-wrap'); event.currentTarget.classList.toggle('active', block.classList.contains('code-wrap')); });
+    toolbar.querySelector('[data-code-lines]').addEventListener('click', (event) => { block.classList.toggle('code-lines'); event.currentTarget.classList.toggle('active', block.classList.contains('code-lines')); });
+    toolbar.querySelector('[data-code-copy]').addEventListener('click', async (event) => { try { await navigator.clipboard.writeText(text); event.currentTarget.textContent = 'Скопировано'; setTimeout(() => { event.currentTarget.textContent = 'Копировать'; }, 1400); } catch { event.currentTarget.textContent = 'Не скопировано'; } });
+  });
+}
 async function loadFeed() {
   const query = state.topic === 'all' ? '' : `?topic=${state.topic}`;
   const [{ articles, personalized }, { posts }] = await Promise.all([request(`/api/feed${query}`), request('/api/posts')]);
@@ -146,6 +163,7 @@ function commentsSection() {
 }
 function bindComments(contentType, contentId) {
   let replyTo = null;
+  enhanceCodeBlocks();
   $('#commentLogin')?.addEventListener('click', () => openAuth(true));
   const clearReply = () => { replyTo = null; $('#commentReplyTarget').hidden = true; };
   $('#cancelReply')?.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); clearReply(); });
@@ -169,6 +187,7 @@ async function renderArticlePage(articleId) {
   $('#commentsList').addEventListener('click', (event) => { const button = event.target.closest('.reply-button'); if (!button) return; if (!state.user) return openAuth(true); replyTo = { id: Number(button.dataset.replyId), author: button.dataset.replyAuthor }; $('#commentReplyLabel').textContent = `Ответ для ${replyTo.author}`; $('#commentReplyTarget').hidden = false; $('#commentForm textarea').focus(); });
   $('#commentForm')?.addEventListener('submit', async (event) => { event.preventDefault(); const textarea = event.currentTarget.elements.body; const button = event.currentTarget.querySelector('button[type="submit"], button:not([type])'); button.disabled = true; try { await request(`/api/articles/${articleId}/comments`, { method: 'POST', body: JSON.stringify({ body: textarea.value, parentId: replyTo?.id || null }) }); textarea.value = ''; clearReply(); await loadComments('articles', articleId); } catch (error) { textarea.setCustomValidity(error.message); textarea.reportValidity(); textarea.setCustomValidity(''); } finally { button.disabled = false; } });
   $('#commentForm textarea')?.addEventListener('keydown', (event) => { if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); $('#commentForm').requestSubmit(); } });
+  enhanceCodeBlocks();
   await loadComments('articles', articleId);
 }
 function postTextMarkup(text = '') {
@@ -190,6 +209,7 @@ async function renderPostPage(postId) {
   const { post } = await request(`/api/posts/${postId}`);
   trackContentReading('post', post);
   $('main').innerHTML = `<article class="reader user-post"><a class="reader-back" href="/">← Вернуться к ленте</a><div class="reader-meta"><span class="tag tools">Авторская статья</span><a class="profile-link" href="/profile/${post.authorId}">${escapeHtml(post.author)}</a><span>${relativeDate(post.publishedAt)}</span></div><h1>${escapeHtml(post.title)}</h1><div class="reader-content post-content" id="postBlocks">${post.blocks.map((block) => postBlockMarkup(block, post)).join('')}</div>${commentsSection()}</article>`;
+  enhanceCodeBlocks();
   $('#postBlocks').addEventListener('click', async (event) => { const option = event.target.closest('.poll-option'); if (!option) return; if (!state.user) return openAuth(true); const pollId = option.closest('.post-poll').dataset.pollId; try { await request(`/api/posts/${post.id}/polls/${pollId}/vote`, { method: 'POST', body: JSON.stringify({ optionIndex: Number(option.dataset.optionIndex) }) }); await renderPostPage(post.id); } catch (error) { alert(error.message); } });
   bindComments('posts', post.id);
   await loadComments('posts', post.id);
