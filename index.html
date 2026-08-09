@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/reader.css" />
     <link rel="stylesheet" href="/layout.css" />
-    <style>.sources-card .manage-button{display:block;width:auto;margin:12px 0 0 auto;padding:0;border:0}</style>
+    <style>.sources-card .manage-button{position:static;display:inline-flex;width:auto;align-items:center;gap:6px;margin:0;padding:0 0 0 12px;border:0;background:var(--bg);color:var(--ink);white-space:nowrap}.sources-card .manage-button span{float:none}.sources-card .section-label{gap:10px}</style>
   </head>
   <body>
     <div class="noise"></div>
@@ -36,9 +36,8 @@
           <div id="profileContent"><p>Войдите, чтобы выбирать темы и получать персональную подборку.</p><button class="subscribe-button" id="profileLogin">Создать аккаунт <span>↗</span></button></div>
         </section>
         <section class="sources-card strip-block">
-          <div class="section-label"><span>03</span><h2>Источники</h2><span class="line"></span></div>
+          <div class="section-label"><span>03</span><h2>Источники</h2><span class="line"></span><button class="manage-button" id="sourcesSetup">Настроить <span>→</span></button></div>
           <div id="sourceList" class="source-list"><p class="loading-copy">Загружаем источники…</p></div>
-          <button class="manage-button" id="sourcesSetup">Настроить источники <span>→</span></button>
         </section>
       </section>
       <section class="content-grid" id="feed">
