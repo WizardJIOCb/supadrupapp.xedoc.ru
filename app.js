@@ -40,7 +40,7 @@ function renderProfile() {
   if (profileButton) profileButton.hidden = !state.user;
   const profileContent = $('#profileContent');
   if (!profileContent) return;
-  profileContent.innerHTML = state.user ? `<div class="profile-email">${escapeHtml(state.user.email)}</div><p>Язык: ${state.preferences.language === 'en' ? 'English' : 'Русский'}<br />Темы: ${state.preferences.topics.length ? state.preferences.topics.map((topic) => labels[topic]).join(', ') : 'все'}</p><button class="subscribe-button" id="profileSettings">Изменить поток <span>→</span></button><button class="logout-button" id="logoutButton">Выйти</button>` : '<p>Войдите, чтобы выбирать темы, источники и язык своей ленты.</p><button class="subscribe-button" id="profileLogin">Создать аккаунт <span>↗</span></button>';
+  profileContent.innerHTML = state.user ? `<div class="profile-email">${escapeHtml(state.user.email)}</div><p>Язык: ${state.preferences.language === 'en' ? 'English' : 'Русский'}<br />Темы: ${state.preferences.topics.length ? state.preferences.topics.map((topic) => labels[topic]).join(', ') : 'все'}</p><button class="logout-button" id="profileSettings">Изменить поток</button><button class="logout-button" id="logoutButton">Выйти</button>` : '<p>Войдите, чтобы выбирать темы, источники и язык своей ленты.</p><button class="subscribe-button" id="profileLogin">Создать аккаунт <span>↗</span></button>';
   $('#profileLogin')?.addEventListener('click', () => openAuth(false));
   $('#profileSettings')?.addEventListener('click', openSettings);
   $('#logoutButton')?.addEventListener('click', logout);
