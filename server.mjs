@@ -33,6 +33,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS user_posts (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, blocks_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, published_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS post_votes (post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE, poll_id TEXT NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, option_index INTEGER NOT NULL, PRIMARY KEY (post_id, poll_id, user_id));
   CREATE INDEX IF NOT EXISTS user_posts_published_idx ON user_posts(published_at DESC);
+  CREATE TABLE IF NOT EXISTS post_comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL REFERENCES user_posts(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id INTEGER, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE INDEX IF NOT EXISTS post_comments_post_idx ON post_comments(post_id, created_at DESC);
 `);
 if (!db.prepare("SELECT name FROM pragma_table_info('comments') WHERE name = 'parent_id'").get()) db.exec('ALTER TABLE comments ADD COLUMN parent_id INTEGER');
 
@@ -268,6 +270,16 @@ function commentsFor(articleId) {
   comments.forEach((comment) => { const parent = comment.parentId ? byId.get(comment.parentId) : null; (parent ? parent.replies : roots).push(comment); });
   return roots;
 }
+function postCommentsFor(postId) {
+  const comments = db.prepare(`SELECT post_comments.id, post_comments.parent_id AS parentId, post_comments.body, post_comments.created_at AS createdAt,
+    COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
+    FROM post_comments JOIN users ON users.id = post_comments.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id
+    WHERE post_comments.post_id = ? ORDER BY datetime(post_comments.created_at) ASC`).all(postId).map((comment) => ({ ...comment, replies: [] }));
+  const byId = new Map(comments.map((comment) => [comment.id, comment]));
+  const roots = [];
+  comments.forEach((comment) => { const parent = comment.parentId ? byId.get(comment.parentId) : null; (parent ? parent.replies : roots).push(comment); });
+  return roots;
+}
 function safeBlocks(rawBlocks) {
   if (!Array.isArray(rawBlocks) || rawBlocks.length < 1 || rawBlocks.length > 60) throw new Error('Добавьте от 1 до 60 блоков.');
   return rawBlocks.map((block) => {
@@ -396,6 +408,20 @@ async function api(request, response, url) {
     if (parent !== null && (!Number.isInteger(parent) || !db.prepare('SELECT id FROM comments WHERE id = ? AND article_id = ?').get(parent, Number(commentsMatch[1])))) return badRequest(response, 'Комментарий, на который вы отвечаете, не найден.');
     db.prepare('INSERT INTO comments (article_id, user_id, parent_id, body) VALUES (?, ?, ?, ?)').run(Number(commentsMatch[1]), user.id, parent, text);
     return json(response, 201, { comments: commentsFor(Number(commentsMatch[1])) });
+  }
+  const postCommentsMatch = url.pathname.match(/^\/api\/posts\/(\d+)\/comments$/);
+  if (request.method === 'GET' && postCommentsMatch) return json(response, 200, { comments: postCommentsFor(Number(postCommentsMatch[1])) });
+  if (request.method === 'POST' && postCommentsMatch) {
+    if (!user) return json(response, 401, { error: 'Войдите, чтобы оставить комментарий.' });
+    const { body: commentBody = '', parentId = null } = await body(request);
+    const text = commentBody.trim().replace(/\s+/g, ' ');
+    if (text.length < 2 || text.length > 1500) return badRequest(response, 'Комментарий должен содержать от 2 до 1500 символов.');
+    const postId = Number(postCommentsMatch[1]);
+    if (!db.prepare('SELECT id FROM user_posts WHERE id = ?').get(postId)) return json(response, 404, { error: 'Публикация не найдена.' });
+    const parent = parentId === null || parentId === undefined || parentId === '' ? null : Number(parentId);
+    if (parent !== null && (!Number.isInteger(parent) || !db.prepare('SELECT id FROM post_comments WHERE id = ? AND post_id = ?').get(parent, postId))) return badRequest(response, 'Комментарий, на который вы отвечаете, не найден.');
+    db.prepare('INSERT INTO post_comments (post_id, user_id, parent_id, body) VALUES (?, ?, ?, ?)').run(postId, user.id, parent, text);
+    return json(response, 201, { comments: postCommentsFor(postId) });
   }
   const articleMatch = url.pathname.match(/^\/api\/articles\/(\d+)$/);
   if (request.method === 'GET' && articleMatch) {
