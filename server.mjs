@@ -26,9 +26,10 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS article_pages (article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE, original_title TEXT NOT NULL, original_content TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS article_page_translations (article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, language TEXT NOT NULL CHECK(language IN ('ru', 'en')), title TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY (article_id, language));
   CREATE TABLE IF NOT EXISTS user_profiles (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, display_name TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id INTEGER, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE INDEX IF NOT EXISTS comments_article_idx ON comments(article_id, created_at DESC);
 `);
+if (!db.prepare("SELECT name FROM pragma_table_info('comments') WHERE name = 'parent_id'").get()) db.exec('ALTER TABLE comments ADD COLUMN parent_id INTEGER');
 
 const SOURCE_SEED = [
   ['OpenAI', 'https://openai.com/news/', 'https://openai.com/news/rss.xml', '#cefa62'],
@@ -253,10 +254,14 @@ async function articlePage(user, articleId) {
   }
 }
 function commentsFor(articleId) {
-  return db.prepare(`SELECT comments.id, comments.body, comments.created_at AS createdAt,
+  const comments = db.prepare(`SELECT comments.id, comments.parent_id AS parentId, comments.body, comments.created_at AS createdAt,
     COALESCE(NULLIF(user_profiles.display_name, ''), substr(users.email, 1, instr(users.email, '@') - 1)) AS author
     FROM comments JOIN users ON users.id = comments.user_id LEFT JOIN user_profiles ON user_profiles.user_id = users.id
-    WHERE comments.article_id = ? ORDER BY datetime(comments.created_at) DESC`).all(articleId);
+    WHERE comments.article_id = ? ORDER BY datetime(comments.created_at) ASC`).all(articleId).map((comment) => ({ ...comment, replies: [] }));
+  const byId = new Map(comments.map((comment) => [comment.id, comment]));
+  const roots = [];
+  comments.forEach((comment) => { const parent = comment.parentId ? byId.get(comment.parentId) : null; (parent ? parent.replies : roots).push(comment); });
+  return roots;
 }
 async function feed(user, topic) {
   const selected = user ? preferences(user.id) : { topics: [], sources: [], language: 'ru' };
@@ -283,12 +288,14 @@ async function api(request, response, url) {
   if (request.method === 'GET' && commentsMatch) return json(response, 200, { comments: commentsFor(Number(commentsMatch[1])) });
   if (request.method === 'POST' && commentsMatch) {
     if (!user) return json(response, 401, { error: 'Войдите, чтобы оставить комментарий.' });
-    const { body: commentBody = '' } = await body(request);
+    const { body: commentBody = '', parentId = null } = await body(request);
     const text = commentBody.trim().replace(/\s+/g, ' ');
     if (text.length < 2 || text.length > 1500) return badRequest(response, 'Комментарий должен содержать от 2 до 1500 символов.');
     const exists = db.prepare('SELECT id FROM articles WHERE id = ?').get(Number(commentsMatch[1]));
     if (!exists) return json(response, 404, { error: 'Статья не найдена.' });
-    db.prepare('INSERT INTO comments (article_id, user_id, body) VALUES (?, ?, ?)').run(Number(commentsMatch[1]), user.id, text);
+    const parent = parentId === null || parentId === undefined || parentId === '' ? null : Number(parentId);
+    if (parent !== null && (!Number.isInteger(parent) || !db.prepare('SELECT id FROM comments WHERE id = ? AND article_id = ?').get(parent, Number(commentsMatch[1])))) return badRequest(response, 'Комментарий, на который вы отвечаете, не найден.');
+    db.prepare('INSERT INTO comments (article_id, user_id, parent_id, body) VALUES (?, ?, ?, ?)').run(Number(commentsMatch[1]), user.id, parent, text);
     return json(response, 201, { comments: commentsFor(Number(commentsMatch[1])) });
   }
   const articleMatch = url.pathname.match(/^\/api\/articles\/(\d+)$/);
@@ -346,7 +353,7 @@ async function api(request, response, url) {
 }
 async function staticFile(request, response, path) {
   const requested = path === '/' ? 'index.html' : path.slice(1);
-  if (!['index.html', 'styles.css', 'reader.css', 'layout.css', 'community.css', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
+  if (!['index.html', 'styles.css', 'reader.css', 'layout.css', 'community.css', 'replies.css', 'app.js'].includes(requested)) { response.writeHead(404); return response.end('Not found'); }
   try {
     const file = await readFile(join(staticDir, requested));
     const type = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'application/javascript; charset=utf-8' }[extname(requested)];
