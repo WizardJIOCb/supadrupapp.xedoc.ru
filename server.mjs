@@ -671,34 +671,39 @@ function profileById(userId) {
   ) ORDER BY datetime(createdAt) DESC LIMIT 100`).all(userId, userId);
   return { profile, posts, comments };
 }
-async function feed(user, topic, sourceId) {
+function articleOrder(sort) {
+  if (sort === 'views') return 'viewCount DESC, commentCount DESC, datetime(articles.published_at) DESC';
+  if (sort === 'comments') return 'commentCount DESC, viewCount DESC, datetime(articles.published_at) DESC';
+  return 'datetime(articles.published_at) DESC';
+}
+async function feed(user, topic, sourceId, sort) {
   const selected = user ? preferences(user.id) : { topics: [], sources: [], language: 'ru' };
   const topics = topic && TOPICS.includes(topic) ? [topic] : selected.topics;
   const requestedSourceId = Number(sourceId);
   const hasSourceFilter = Number.isInteger(requestedSourceId) && requestedSourceId > 0;
   const disabledSources = selected.sources.filter((row) => !row.enabled).map((row) => row.sourceId);
   let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, articles.source_popularity_label AS sourcePopularityLabel,
-    (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id) AS commentCount,
+    (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id AND comments.deleted_at IS NULL) AS commentCount,
     sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE articles.is_hidden = 0`;
   const params = [];
   if (hasSourceFilter) { query += ' AND articles.source_id = ?'; params.push(requestedSourceId); }
   else if (topics.length) { query += ` AND articles.category IN (${topics.map(() => '?').join(',')})`; params.push(...topics); }
   if (!hasSourceFilter && disabledSources.length) { query += ` AND articles.source_id NOT IN (${disabledSources.map(() => '?').join(',')})`; params.push(...disabledSources); }
-  query += ' ORDER BY datetime(articles.published_at) DESC LIMIT 30';
+  query += ` ORDER BY ${articleOrder(sort)} LIMIT 30`;
   const articles = db.prepare(query).all(...params);
   return { articles: await translateArticles(articles, selected.language), language: selected.language };
 }
-async function highlights(user, period, sourceId) {
+async function highlights(user, period, sourceId, sort) {
   const days = { day: 1, week: 7, month: 31 }[period] || 1;
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   const language = user ? preferences(user.id).language : 'ru';
   const selectedSourceId = Number(sourceId) || null;
   let query = `SELECT articles.id, articles.title, articles.url, articles.summary, articles.category, articles.published_at AS publishedAt, articles.view_count AS viewCount, articles.source_popularity_label AS sourcePopularityLabel,
-    (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id) AS commentCount,
+    (SELECT COUNT(*) FROM comments WHERE comments.article_id = articles.id AND comments.deleted_at IS NULL) AS commentCount,
     sources.id AS sourceId, sources.name AS sourceName, sources.accent FROM articles JOIN sources ON sources.id = articles.source_id WHERE sources.enabled = 1 AND articles.is_hidden = 0`;
   const params = [];
   if (selectedSourceId) { query += ' AND articles.source_id = ?'; params.push(selectedSourceId); }
-  query += ' ORDER BY datetime(articles.published_at) DESC LIMIT 400';
+  query += ` ORDER BY ${articleOrder(sort)} LIMIT 400`;
   const rows = db.prepare(query).all(...params)
     .filter((article) => new Date(article.publishedAt).getTime() >= cutoff)
     .map((article) => {
@@ -711,7 +716,12 @@ async function highlights(user, period, sourceId) {
       const sourceScore = rank ? Math.max(0, 100 - rank) * 1.25 + Math.min(points, 400) * .15 + Math.min(sourceComments, 400) * .07 : 0;
       const localScore = Math.min(article.viewCount, 100) * .5 + Math.min(article.commentCount, 100) * 3;
       return { ...article, hotScore: Math.round(sourceScore + localScore + freshness) };
-    }).sort((left, right) => right.hotScore - left.hotScore || new Date(right.publishedAt) - new Date(left.publishedAt));
+    });
+  rows.sort((left, right) => {
+    if (sort === 'views') return Number(right.viewCount || 0) - Number(left.viewCount || 0) || Number(right.commentCount || 0) - Number(left.commentCount || 0) || new Date(right.publishedAt) - new Date(left.publishedAt);
+    if (sort === 'comments') return Number(right.commentCount || 0) - Number(left.commentCount || 0) || Number(right.viewCount || 0) - Number(left.viewCount || 0) || new Date(right.publishedAt) - new Date(left.publishedAt);
+    return right.hotScore - left.hotScore || new Date(right.publishedAt) - new Date(left.publishedAt);
+  });
   const perSource = new Map();
   const articles = [];
   for (const article of rows) {
@@ -865,10 +875,10 @@ async function api(request, response, url) {
     return json(response, 200, { post: postById(post.id, user) });
   }
   if (request.method === 'GET' && url.pathname === '/api/feed') {
-    const result = await feed(user, url.searchParams.get('topic'), url.searchParams.get('source'));
+    const result = await feed(user, url.searchParams.get('topic'), url.searchParams.get('source'), url.searchParams.get('sort'));
     return json(response, 200, { ...result, personalized: Boolean(user) });
   }
-  if (request.method === 'GET' && url.pathname === '/api/highlights') return json(response, 200, await highlights(user, url.searchParams.get('period'), url.searchParams.get('source')));
+  if (request.method === 'GET' && url.pathname === '/api/highlights') return json(response, 200, await highlights(user, url.searchParams.get('period'), url.searchParams.get('source'), url.searchParams.get('sort')));
   const commentsMatch = url.pathname.match(/^\/api\/articles\/(\d+)\/comments$/);
   if (request.method === 'GET' && commentsMatch) return json(response, 200, { comments: commentsFor(Number(commentsMatch[1]), canModerate(user)) });
   if (request.method === 'POST' && commentsMatch) {

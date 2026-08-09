@@ -102,12 +102,14 @@ async function loadFeed() {
   if (isHighlights) {
     const query = new URLSearchParams({ period: state.bestPeriod });
     if (state.sourceId) query.set('source', state.sourceId);
+    if (state.feedSort !== 'recent') query.set('sort', state.feedSort);
     ({ articles } = await request(`/api/highlights?${query}`));
     personalized = Boolean(state.user);
   } else {
     const query = new URLSearchParams();
     if (state.sourceId) query.set('source', state.sourceId);
     else if (state.topic !== 'all') query.set('topic', state.topic);
+    if (state.feedSort !== 'recent') query.set('sort', state.feedSort);
     const feedResult = await request(`/api/feed${query.size ? `?${query}` : ''}`);
     articles = feedResult.articles;
     personalized = feedResult.personalized;
